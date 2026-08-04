@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>기억 서랍</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+  :root {
+    --bg: #F2F4F3;
+    --panel: #FFFFFF;
+    --ink: #17211D;
+    --ink-soft: #5A6663;
+    --line: #DDE3E0;
+    --pine: #2E6B50;
+    --pine-soft: #E4EFE9;
+    --amber: #8A6A2F;
+    --amber-soft: #F3ECDD;
+    --slate: #44566B;
+    --slate-soft: #E5EAF0;
+    --mono: "SF Mono", "D2Coding", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Pretendard Variable", Pretendard, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    padding: 28px 32px 18px;
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  header h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+  header p { color: var(--ink-soft); font-size: 13px; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(340px, 460px) 1fr;
+    gap: 20px;
+    padding: 0 32px 32px;
+    max-width: 1280px;
+    align-items: start;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .panel-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .panel-head b { font-size: 14px; font-weight: 700; }
+  .panel-head span { font-size: 12px; color: var(--ink-soft); }
+
+  /* ---- ingest ---- */
+  textarea {
+    width: 100%; border: none; resize: vertical;
+    min-height: 220px; padding: 16px 18px;
+    font: 14px/1.6 "Pretendard Variable", sans-serif;
+    color: var(--ink); background: transparent; outline: none;
+  }
+  textarea::placeholder { color: #A6B0AC; }
+  .ingest-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 18px; border-top: 1px solid var(--line);
+  }
+  .hint { font-size: 12px; color: var(--ink-soft); }
+  button.save {
+    background: var(--pine); color: #fff; border: none;
+    padding: 9px 22px; border-radius: 8px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button.save:disabled { opacity: .5; cursor: default; }
+  button.save:focus-visible, .ask-bar button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  #saveResult { padding: 0 18px; }
+  .save-ok {
+    margin: 12px 0; padding: 10px 14px; border-radius: 8px;
+    background: var(--pine-soft); color: var(--pine);
+    font-size: 13px; font-weight: 500;
+  }
+  .save-err { background: #F7E4E1; color: #8C3B2E; }
+
+  /* ---- recent list ---- */
+  #recent { margin-top: 20px; }
+  .mem {
+    padding: 12px 18px; border-top: 1px solid var(--line);
+    display: flex; gap: 10px; align-items: flex-start;
+  }
+  .mem:first-of-type { border-top: none; }
+  .mem .txt { flex: 1; font-size: 13px; line-height: 1.55; color: var(--ink); }
+  .mem .txt small { display: block; color: var(--ink-soft); margin-top: 3px; font-size: 11.5px; }
+  .mem button {
+    border: none; background: none; color: #B9C2BE;
+    cursor: pointer; font-size: 15px; padding: 2px 4px;
+  }
+  .mem button:hover { color: #8C3B2E; }
+  .chip {
+    font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+    padding: 3px 8px; border-radius: 5px; white-space: nowrap; margin-top: 1px;
+  }
+  .chip.slack { background: var(--slate-soft); color: var(--slate); }
+  .chip.email { background: var(--amber-soft); color: var(--amber); }
+  .chip.note  { background: var(--pine-soft); color: var(--pine); }
+  .mem.expired .txt { color: #A6B0AC; }
+  .badge-exp {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px; margin-left: 6px;
+    background: #F7E4E1; color: #8C3B2E;
+  }
+  .badge-until {
+    font-family: var(--mono); font-size: 10px;
+    color: var(--ink-soft); margin-left: 6px;
+  }
+  button.clean {
+    border: 1px solid var(--line); background: #fff; color: #8C3B2E;
+    font-size: 11.5px; font-weight: 600; padding: 4px 10px;
+    border-radius: 6px; cursor: pointer;
+  }
+  button.clean:hover { background: #F7E4E1; }
+  .tagbar {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 10px 18px; border-bottom: 1px solid var(--line);
+  }
+  .tagbar:empty { display: none; }
+  .tag {
+    font-size: 11.5px; font-weight: 600; cursor: pointer;
+    padding: 4px 10px; border-radius: 20px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
+  }
+  .tag:hover { border-color: var(--pine); color: var(--pine); }
+  .tag.on { background: var(--pine); border-color: var(--pine); color: #fff; }
+  .mem-tags { display: inline; }
+  .mem-tags i {
+    font-style: normal; font-size: 10.5px; color: var(--pine);
+    background: var(--pine-soft); padding: 1px 6px; border-radius: 4px; margin-left: 4px;
+  }
+
+  /* ---- login ---- */
+  #loginOverlay {
+    display: none; position: fixed; inset: 0; z-index: 10;
+    background: var(--bg);
+    align-items: center; justify-content: center;
+  }
+  #loginOverlay.show { display: flex; }
+  .login-card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 32px 36px; width: min(360px, 90vw); text-align: center;
+  }
+  .login-card h2 { font-size: 18px; font-weight: 800; margin-bottom: 6px; }
+  .login-card p { font-size: 13px; color: var(--ink-soft); margin-bottom: 18px; }
+  .login-card input {
+    width: 100%; border: 1px solid var(--line); border-radius: 9px;
+    padding: 11px 14px; font: 14px "Pretendard Variable", sans-serif;
+    outline: none; margin-bottom: 12px;
+  }
+  .login-card input:focus { border-color: var(--pine); }
+  .login-card button {
+    width: 100%; background: var(--pine); color: #fff; border: none;
+    padding: 11px; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .login-err { color: #8C3B2E; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+
+  /* ---- chat ---- */
+  #chat {
+    display: flex; flex-direction: column;
+    height: calc(100vh - 130px); min-height: 480px;
+  }
+  #log { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 82%; padding: 11px 15px; border-radius: 12px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: var(--ink); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.bot  { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg.bot .srcs { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); display: flex; flex-wrap: wrap; gap: 6px; }
+  .srcs .chip { cursor: pointer; }
+  .raw {
+    display: none; margin-top: 8px; padding: 10px 12px;
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-all; color: var(--ink);
+  }
+  .raw.open { display: block; }
+  .raw b { display: block; font-family: "Pretendard Variable", sans-serif; font-size: 11px; color: var(--ink-soft); margin-bottom: 6px; }
+  .empty { color: var(--ink-soft); font-size: 13.5px; text-align: center; margin: auto; line-height: 1.8; }
+  .ask-bar { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); }
+  .ask-bar input {
+    flex: 1; border: 1px solid var(--line); border-radius: 9px;
+    padding: 11px 14px; font: 14px "Pretendard Variable", sans-serif; outline: none;
+  }
+  .ask-bar input:focus { border-color: var(--pine); }
+  .ask-bar button {
+    background: var(--ink); color: #fff; border: none; border-radius: 9px;
+    padding: 0 20px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .thinking { color: var(--ink-soft); font-size: 13px; align-self: flex-start; padding: 4px 2px; }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; padding: 0 16px 24px; }
+    header { padding: 20px 16px 14px; }
+    #chat { height: auto; min-height: 420px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .msg { animation: rise .18s ease-out; }
+    @keyframes rise { from { transform: translateY(4px); opacity: 0; } }
+  }
+</style>
+</head>
+<body>
+
+<div id="loginOverlay">
+  <div class="login-card">
+    <h2>기억 서랍</h2>
+    <p>비밀번호를 입력하면 열려요</p>
+    <input type="password" id="pwBox" placeholder="비밀번호" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()">열기</button>
+    <div class="login-err" id="loginErr"></div>
+  </div>
+</div>
+
+<header>
+  <h1>기억 서랍</h1>
+  <p>Slack·메일·메모를 붙여넣어 저장하고, 나중에 물어보세요</p>
+</header>
+
+<main>
+  <section>
+    <div class="panel">
+      <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
+      <textarea id="pasteBox" placeholder="Slack 스레드, 메일 본문, 또는 그냥 메모를 여기에 붙여넣기&#10;&#10;예)&#10;김철수  오후 2:31&#10;다음주 배포는 수요일로 확정입니다&#10;박영희  오후 2:33&#10;스테이징 검증은 화요일까지 완료할게요"></textarea>
+      <div id="saveResult"></div>
+      <div class="ingest-foot">
+        <span class="hint">Ctrl/⌘ + Enter로 저장</span>
+        <button class="save" id="saveBtn" onclick="ingest()">저장하기</button>
+      </div>
+    </div>
+
+    <div class="panel" id="recent">
+      <div class="panel-head"><b>최근 저장</b>
+        <span style="display:flex;align-items:center;gap:10px">
+          <span id="memCount"></span>
+          <button id="cleanBtn" class="clean" onclick="cleanExpired()" style="display:none">만료 정리</button>
+        </span>
+      </div>
+      <div class="tagbar" id="tagBar"></div>
+      <div id="memList"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="chat">
+    <div class="panel-head"><b>묻기</b><span>저장된 내용에서만 답해요</span></div>
+    <div id="log">
+      <div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>
+    </div>
+    <div class="ask-bar">
+      <input id="askBox" placeholder="예: 다음주 배포 일정이 언제였지?" onkeydown="if(event.key==='Enter')ask()">
+      <button onclick="ask()">질문</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const chipName = { slack: "SLACK", email: "MAIL", note: "MEMO" };
+
+async function ingest() {
+  const text = $("pasteBox").value.trim();
+  if (!text) return;
+  const btn = $("saveBtn");
+  btn.disabled = true; btn.textContent = "저장 중…";
+  $("saveResult").innerHTML = "";
+  try {
+    const r = await fetch("/api/ingest", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "저장 실패");
+    $("saveResult").innerHTML =
+      `<div class="save-ok">${chipName[d.source] || d.source}로 인식 — ${d.saved}개 조각으로 저장했어요${d.replaced ? ` (기존 ${d.replaced}건 갱신)` : ""}</div>`;
+    $("pasteBox").value = "";
+    loadRecent();
+  } catch (e) {
+    $("saveResult").innerHTML = `<div class="save-ok save-err">저장 실패: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = "저장하기";
+  }
+}
+
+$("pasteBox").addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ingest();
+});
+
+let activeTag = null;
+
+async function loadRecent() {
+  const [r, tr] = await Promise.all([
+    fetch("/api/memories?limit=30"),
+    fetch("/api/tags"),
+  ]);
+  const items = await r.json();
+  const tags = await tr.json();
+
+  $("tagBar").innerHTML = tags.slice(0, 12).map(t =>
+    `<span class="tag${t.tag === activeTag ? " on" : ""}" onclick="filterTag('${escapeHtml(t.tag)}')">${escapeHtml(t.tag)} ${t.count}</span>`
+  ).join("");
+
+  const shown = activeTag
+    ? items.filter(m => ((m.metadata || {}).tags || []).includes(activeTag))
+    : items;
+
+  $("memCount").textContent = shown.length ? `${shown.length}건` : "";
+  const now = Date.now();
+  let expiredCount = 0;
+  $("memList").innerHTML = shown.length ? shown.map(m => {
+    const meta = m.metadata || {};
+    const who = meta.sender || meta.subject || meta.channel || "";
+    const date = new Date(m.created_at).toLocaleDateString("ko-KR");
+    const exp = m.expires_at ? new Date(m.expires_at) : null;
+    const isExpired = exp && exp.getTime() < now;
+    if (isExpired) expiredCount++;
+    const badge = isExpired
+      ? `<span class="badge-exp">만료됨</span>`
+      : exp ? `<span class="badge-until">~${exp.getMonth() + 1}/${exp.getDate()}</span>` : "";
+    const tagHtml = (meta.tags || []).length
+      ? `<span class="mem-tags">${(meta.tags || []).map(t => `<i>${escapeHtml(t)}</i>`).join("")}</span>` : "";
+    return `<div class="mem${isExpired ? " expired" : ""}">
+      <span class="chip ${m.source}">${chipName[m.source] || m.source}</span>
+      <div class="txt">${escapeHtml(m.content.slice(0, 90))}${m.content.length > 90 ? "…" : ""}
+        <small>${escapeHtml(who)}${who ? " · " : ""}${date} 저장${badge}${tagHtml}</small></div>
+      <button title="삭제" onclick="del('${m.id}')">×</button>
+    </div>`;
+  }).join("") : `<div class="mem"><div class="txt" style="color:var(--ink-soft)">${activeTag ? "이 태그의 기억이 없어요." : "저장된 기억이 아직 없어요."}</div></div>`;
+  $("cleanBtn").style.display = expiredCount ? "" : "none";
+  $("cleanBtn").textContent = `만료 정리 (${expiredCount})`;
+}
+
+function filterTag(tag) {
+  activeTag = (activeTag === tag) ? null : tag;
+  loadRecent();
+}
+
+async function cleanExpired() {
+  if (!confirm("만료된 기억을 모두 삭제할까요?")) return;
+  const r = await fetch("/api/memories/expired", { method: "DELETE" });
+  const d = await r.json();
+  alert(`${d.deleted}건 삭제했어요.`);
+  loadRecent();
+}
+
+async function del(id) {
+  if (!confirm("이 기억을 삭제할까요?")) return;
+  await fetch(`/api/memories/${id}`, { method: "DELETE" });
+  loadRecent();
+}
+
+function addMsg(cls, html) {
+  const empty = $("log").querySelector(".empty");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = "msg " + cls;
+  div.innerHTML = html;
+  $("log").appendChild(div);
+  $("log").scrollTop = $("log").scrollHeight;
+  return div;
+}
+
+let chatHistory = [];
+
+async function ask() {
+  const q = $("askBox").value.trim();
+  if (!q) return;
+  $("askBox").value = "";
+  addMsg("user", escapeHtml(q));
+  const t = document.createElement("div");
+  t.className = "thinking"; t.textContent = "기억을 뒤지는 중…";
+  $("log").appendChild(t); $("log").scrollTop = $("log").scrollHeight;
+  try {
+    const r = await fetch("/api/ask", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q, history: chatHistory })
+    });
+    const d = await r.json();
+    t.remove();
+    chatHistory.push({ role: "user", content: q }, { role: "assistant", content: d.answer });
+    if (chatHistory.length > 12) chatHistory = chatHistory.slice(-12);
+    let html = escapeHtml(d.answer);
+    if (d.sources && d.sources.length) {
+      html += `<div class="srcs">` + d.sources.map((s, i) =>
+        `<span class="chip ${s.source}" onclick="toggleRaw(this, ${i})">${chipName[s.source] || s.source} · 원문</span>`
+      ).join("") + `</div>`;
+      html += d.sources.map((s, i) =>
+        `<div class="raw" data-raw="${i}"><b>원문 그대로 (${chipName[s.source] || s.source})</b>${escapeHtml(s.content)}</div>`
+      ).join("");
+    }
+    addMsg("bot", html);
+  } catch (e) {
+    t.remove();
+    addMsg("bot", "오류가 발생했어요: " + escapeHtml(e.message));
+  }
+}
+
+function toggleRaw(chip, i) {
+  const msg = chip.closest(".msg");
+  const raw = msg.querySelector(`[data-raw="${i}"]`);
+  if (raw) raw.classList.toggle("open");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function doLogin() {
+  const pw = $("pwBox").value;
+  if (!pw) return;
+  const r = await fetch("/api/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: pw })
+  });
+  if (r.ok) {
+    $("loginOverlay").classList.remove("show");
+    loadRecent();
+  } else {
+    $("loginErr").textContent = "비밀번호가 맞지 않아요.";
+    $("pwBox").value = "";
+  }
+}
+
+async function init() {
+  const r = await fetch("/api/memories?limit=20");
+  if (r.status === 401) {
+    $("loginOverlay").classList.add("show");
+    $("pwBox").focus();
+    return;
+  }
+  loadRecent();
+}
+
+init();
+</script>
+</body>
+</html>
