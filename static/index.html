@@ -137,6 +137,59 @@
     font-style: normal; font-size: 10.5px; color: var(--pine);
     background: var(--pine-soft); padding: 1px 6px; border-radius: 4px; margin-left: 4px;
   }
+  .section-tabs {
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+    border-bottom: 1px solid var(--line); background: #fff;
+  }
+  .section-tabs button {
+    min-width: 0; border: none; border-right: 1px solid var(--line); background: #fff;
+    padding: 9px 4px; color: var(--ink-soft); font-size: 11px; font-weight: 600;
+    cursor: pointer; white-space: nowrap;
+  }
+  .section-tabs button:last-child { border-right: none; }
+  .section-tabs button.on { background: var(--pine-soft); color: var(--pine); }
+  .access-details {
+    flex: 1; display: grid; grid-template-columns: 1fr; gap: 5px;
+    font-size: 12px; line-height: 1.45; min-width: 0;
+  }
+  .access-title { font-size: 13px; font-weight: 700; color: var(--ink); }
+  .access-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 7px; }
+  .access-row b { color: var(--ink-soft); font-weight: 600; }
+  .access-row code, .access-row a {
+    color: var(--ink); font-family: var(--mono); font-size: 11px;
+    overflow-wrap: anywhere; text-decoration: none;
+  }
+  .access-row a:hover { color: var(--pine); text-decoration: underline; }
+  .filters {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+    padding: 12px 18px; border-bottom: 1px solid var(--line); background: #FAFBFA;
+  }
+  .filters select, .filters input {
+    min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 9px; background: #fff; color: var(--ink);
+    font: 12px "Pretendard Variable", sans-serif; outline: none;
+  }
+  .filters select:focus, .filters input:focus { border-color: var(--pine); }
+  .filter-dates { display: grid; grid-column: 1 / -1; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .filter-actions { display: flex; align-items: center; justify-content: flex-end; }
+  .filter-actions button {
+    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
+    border-radius: 6px; padding: 7px 10px; font-size: 11.5px; cursor: pointer;
+  }
+  .date-group {
+    padding: 9px 18px; border-top: 1px solid var(--line); background: #F7F9F8;
+    color: var(--ink-soft); font-size: 11px; font-weight: 700;
+  }
+  .more-wrap { padding: 10px 18px 14px; border-top: 1px solid var(--line); }
+  .more-wrap button {
+    width: 100%; border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
+    border-radius: 6px; padding: 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .more-wrap button:hover { border-color: var(--pine); color: var(--pine); }
+  .status-badge {
+    display: inline-block; margin-left: 5px; padding: 1px 5px; border-radius: 4px;
+    background: var(--slate-soft); color: var(--slate); font-size: 10px; font-weight: 600;
+  }
 
   /* ---- login ---- */
   #loginOverlay {
@@ -242,8 +295,28 @@
           <button id="cleanBtn" class="clean" onclick="cleanExpired()" style="display:none">만료 정리</button>
         </span>
       </div>
+      <div class="section-tabs" id="sectionTabs">
+        <button class="on" data-section="" onclick="setSection('', this)">전체</button>
+        <button data-section="work" onclick="setSection('work', this)">업무</button>
+        <button data-section="access" onclick="setSection('access', this)">계정·접속</button>
+        <button data-section="resources" onclick="setSection('resources', this)">자료·강의</button>
+        <button data-section="notes" onclick="setSection('notes', this)">메모</button>
+      </div>
       <div class="tagbar" id="tagBar"></div>
+      <div class="filters">
+        <select id="personFilter" aria-label="담당자"><option value="">담당자 전체</option></select>
+        <select id="projectFilter" aria-label="프로젝트"><option value="">프로젝트 전체</option></select>
+        <select id="statusFilter" aria-label="상태"><option value="">상태 전체</option></select>
+        <div class="filter-actions"><button onclick="resetFilters()">필터 초기화</button></div>
+        <div class="filter-dates">
+          <input id="dateFrom" type="date" aria-label="시작일">
+          <input id="dateTo" type="date" aria-label="종료일">
+        </div>
+      </div>
       <div id="memList"></div>
+      <div class="more-wrap" id="moreWrap" style="display:none">
+        <button onclick="showMore()">더 보기</button>
+      </div>
     </div>
   </section>
 
@@ -274,11 +347,15 @@ async function ingest() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text })
     });
-    const d = await r.json();
+    const contentType = r.headers.get("content-type") || "";
+    const d = contentType.includes("application/json")
+      ? await r.json()
+      : { detail: await r.text() || `서버 오류 (${r.status})` };
     if (!r.ok) throw new Error(d.detail || "저장 실패");
     $("saveResult").innerHTML =
       `<div class="save-ok">${chipName[d.source] || d.source}로 인식 — ${d.saved}개 조각으로 저장했어요${d.replaced ? ` (기존 ${d.replaced}건 갱신)` : ""}</div>`;
     $("pasteBox").value = "";
+    filtersLoaded = false;
     loadRecent();
   } catch (e) {
     $("saveResult").innerHTML = `<div class="save-ok save-err">저장 실패: ${e.message}</div>`;
@@ -292,10 +369,69 @@ $("pasteBox").addEventListener("keydown", e => {
 });
 
 let activeTag = null;
+let activeSection = "";
+let filtersLoaded = false;
+let visibleLimit = 10;
+
+function optionHtml(value) {
+  return `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+}
+
+async function loadFilters() {
+  const r = await fetch("/api/memory-filters");
+  if (!r.ok) return;
+  const data = await r.json();
+  $("personFilter").innerHTML = `<option value="">담당자 전체</option>${data.people.map(optionHtml).join("")}`;
+  $("projectFilter").innerHTML = `<option value="">프로젝트 전체</option>${data.projects.map(optionHtml).join("")}`;
+  $("statusFilter").innerHTML = `<option value="">상태 전체</option>${data.statuses.map(optionHtml).join("")}`;
+  filtersLoaded = true;
+}
+
+function memoryParams() {
+  const params = new URLSearchParams({ limit: "200" });
+  const entries = {
+    person: $("personFilter").value,
+    project: $("projectFilter").value,
+    status: $("statusFilter").value,
+    section: activeSection,
+    date_from: $("dateFrom").value,
+    date_to: $("dateTo").value,
+  };
+  Object.entries(entries).forEach(([key, value]) => value && params.set(key, value));
+  return params;
+}
+
+function extractField(content, names) {
+  const lines = String(content).split(/\r?\n/).map(line => line.trim());
+  for (const line of lines) {
+    for (const name of names) {
+      const match = line.match(new RegExp(`^${name}\\s*:\\s*(.+)$`, "i"));
+      if (match) return match[1].trim();
+    }
+  }
+  return "";
+}
+
+function accessDetails(m, meta) {
+  const service = extractField(m.content, ["서비스명", "제목"]) || meta.project || "접속 정보";
+  const url = extractField(m.content, ["URL", "호스트"]);
+  const id = extractField(m.content, ["아이디", "ID"]);
+  const password = extractField(m.content, ["비밀번호", "PW", "임시PW"]);
+  const urlValue = /^https?:\/\//i.test(url)
+    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>`
+    : `<code>${escapeHtml(url || "미기재")}</code>`;
+  return `<div class="access-details">
+    <div class="access-title">${escapeHtml(service)}</div>
+    <div class="access-row"><b>URL</b>${urlValue}</div>
+    <div class="access-row"><b>ID</b><code>${escapeHtml(id || "미기재")}</code></div>
+    <div class="access-row"><b>비밀번호</b><code>${escapeHtml(password || "미기재")}</code></div>
+  </div>`;
+}
 
 async function loadRecent() {
+  if (!filtersLoaded) await loadFilters();
   const [r, tr] = await Promise.all([
-    fetch("/api/memories?limit=30"),
+    fetch(`/api/memories?${memoryParams()}`),
     fetch("/api/tags"),
   ]);
   const items = await r.json();
@@ -309,36 +445,81 @@ async function loadRecent() {
     ? items.filter(m => ((m.metadata || {}).tags || []).includes(activeTag))
     : items;
 
-  $("memCount").textContent = shown.length ? `${shown.length}건` : "";
+  const visibleItems = shown.slice(0, visibleLimit);
+  $("memCount").textContent = shown.length
+    ? `${Math.min(visibleLimit, shown.length)}/${shown.length}건` : "";
   const now = Date.now();
-  let expiredCount = 0;
-  $("memList").innerHTML = shown.length ? shown.map(m => {
+  const expiredCount = shown.filter(m =>
+    m.expires_at && new Date(m.expires_at).getTime() < now
+  ).length;
+  let previousDate = null;
+  $("memList").innerHTML = visibleItems.length ? visibleItems.map(m => {
     const meta = m.metadata || {};
-    const who = meta.sender || meta.subject || meta.channel || "";
-    const date = new Date(m.created_at).toLocaleDateString("ko-KR");
+    const who = meta.person || meta.sender || meta.subject || meta.channel || "";
+    const workDate = meta.work_date || m.created_at.slice(0, 10);
+    const savedDate = new Date(m.created_at).toLocaleDateString("ko-KR");
+    const dateHeader = workDate !== previousDate
+      ? `<div class="date-group">${escapeHtml(workDate)} 업무</div>` : "";
+    previousDate = workDate;
     const exp = m.expires_at ? new Date(m.expires_at) : null;
     const isExpired = exp && exp.getTime() < now;
-    if (isExpired) expiredCount++;
     const badge = isExpired
       ? `<span class="badge-exp">만료됨</span>`
       : exp ? `<span class="badge-until">~${exp.getMonth() + 1}/${exp.getDate()}</span>` : "";
     const tagHtml = (meta.tags || []).length
       ? `<span class="mem-tags">${(meta.tags || []).map(t => `<i>${escapeHtml(t)}</i>`).join("")}</span>` : "";
-    return `<div class="mem${isExpired ? " expired" : ""}">
+    const statusHtml = meta.status ? `<span class="status-badge">${escapeHtml(meta.status)}</span>` : "";
+    const project = meta.project ? ` · ${escapeHtml(meta.project)}` : "";
+    const isAccess = ["credential", "system"].includes(meta.record_type);
+    const body = isAccess ? accessDetails(m, meta) : `<div class="txt">${escapeHtml(m.content.slice(0, 90))}${m.content.length > 90 ? "…" : ""}
+        <small>${escapeHtml(who)}${project}${who || project ? " · " : ""}${savedDate} 저장${statusHtml}${badge}${tagHtml}</small></div>`;
+    return `${dateHeader}<div class="mem${isExpired ? " expired" : ""}">
       <span class="chip ${m.source}">${chipName[m.source] || m.source}</span>
-      <div class="txt">${escapeHtml(m.content.slice(0, 90))}${m.content.length > 90 ? "…" : ""}
-        <small>${escapeHtml(who)}${who ? " · " : ""}${date} 저장${badge}${tagHtml}</small></div>
+      ${body}
       <button title="삭제" onclick="del('${m.id}')">×</button>
     </div>`;
   }).join("") : `<div class="mem"><div class="txt" style="color:var(--ink-soft)">${activeTag ? "이 태그의 기억이 없어요." : "저장된 기억이 아직 없어요."}</div></div>`;
   $("cleanBtn").style.display = expiredCount ? "" : "none";
   $("cleanBtn").textContent = `만료 정리 (${expiredCount})`;
+  $("moreWrap").style.display = shown.length > visibleLimit ? "" : "none";
 }
 
 function filterTag(tag) {
   activeTag = (activeTag === tag) ? null : tag;
+  visibleLimit = 10;
   loadRecent();
 }
+
+function setSection(section, button) {
+  activeSection = section;
+  visibleLimit = 10;
+  $("sectionTabs").querySelectorAll("button").forEach(item => item.classList.remove("on"));
+  button.classList.add("on");
+  loadRecent();
+}
+
+function showMore() {
+  visibleLimit += 10;
+  loadRecent();
+}
+
+function resetFilters() {
+  ["personFilter", "projectFilter", "statusFilter", "dateFrom", "dateTo"].forEach(id => $(id).value = "");
+  activeTag = null;
+  activeSection = "";
+  visibleLimit = 10;
+  $("sectionTabs").querySelectorAll("button").forEach(item =>
+    item.classList.toggle("on", item.dataset.section === "")
+  );
+  loadRecent();
+}
+
+["personFilter", "projectFilter", "statusFilter", "dateFrom", "dateTo"].forEach(id =>
+  $(id).addEventListener("change", () => {
+    visibleLimit = 10;
+    loadRecent();
+  })
+);
 
 async function cleanExpired() {
   if (!confirm("만료된 기억을 모두 삭제할까요?")) return;

@@ -1,79 +1,207 @@
 # 기억 서랍 (Memory Agent)
 
-Slack 메시지·메일·메모를 붙여넣으면 자동으로 분류/청킹/임베딩해서 Supabase에 저장하고,
-나중에 질문하면 저장된 내용만 근거로 답하는 로컬 웹앱.
+Slack 메시지, 이메일, 메모를 붙여넣으면 OpenAI로 내용을 구조화하고 임베딩한 뒤
+Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저장된 내용만 근거로
+질문에 답하고, 답변에 사용한 원문을 함께 확인할 수 있습니다.
 
-## 구조
+## 주요 기능
 
+- Slack, 이메일, 일반 메모 자동 판별 및 주제 단위 청킹
+- 담당자, 프로젝트, 상태, 업무일, 마감일, 카테고리, 태그 자동 추출
+- 담당자·프로젝트·상태·기간 필터와 업무일별 타임라인
+- 업무, 계정·접속, 자료·강의, 메모 유형별 탭과 계정 전용 상세 표시
+- 벡터 의미 검색과 사람 이름 정확 검색을 결합한 하이브리드 검색
+- `오늘`, `어제`, `이번 주`, `지난주`, `이번 달` 기반 날짜 검색
+- 중복 기억 교체, 만료된 기억 정리, 개별 삭제
+- 답변 근거 원문 조회
+- 선택적 비밀번호 로그인
+
+## 처리 구조
+
+```text
+붙여넣기
+  -> OpenAI 텍스트 분석 및 구조화
+  -> OpenAI 임베딩 생성
+  -> Supabase PostgreSQL + pgvector 저장
+
+질문
+  -> 이름·날짜 정확 검색 + 벡터 유사도 검색
+  -> 태그 리랭킹
+  -> OpenAI 답변 생성
+  -> 답변과 근거 원문 표시
 ```
-붙여넣기 → Claude 파서 (slack/email/note 판별 + 청킹 + 메타데이터 추출)
-        → OpenAI 임베딩 → Supabase (pgvector)
 
-질문     → 임베딩 → match_memories (코사인 검색, top-k)
-        → 유사도 임계값 미달이면 "없음" 응답 → Claude 답변 + 출처 표시
+Redis는 필수 구성요소가 아닙니다. 현재는 Supabase가 영구 저장과 벡터 검색을
+담당합니다. 다중 사용자 응답 캐시, 비동기 수집 작업 큐, 세션 저장이 필요해질 때
+Redis를 추가하는 것이 적절합니다.
+
+## 요구 사항
+
+- Python 3.12 권장
+- Supabase 프로젝트
+- OpenAI API 키
+- WSL 또는 Linux/macOS 환경 권장
+
+## Supabase 설정
+
+Supabase SQL Editor에서 다음 파일을 순서대로 실행합니다.
+
+1. `schema.sql`
+2. `migration_expiry.sql`로 만료 필드와 검색 함수를 갱신
+
+`SUPABASE_SERVICE_KEY`는 RLS를 우회하므로 개인 로컬 실행 용도로만 사용해야 합니다.
+
+## 환경변수
+
+프로젝트 루트에 `.env`를 만듭니다.
+
+```dotenv
+OPENAI_API_KEY=your-openai-api-key
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-supabase-service-role-key
+
+# 선택 사항
+CHAT_MODEL=gpt-4o-mini
+EMBED_MODEL=text-embedding-3-small
+SIM_THRESHOLD=0.25
+DUP_THRESHOLD=0.92
+TOP_K=8
+APP_PASSWORD=
+APP_SECRET=
 ```
 
-## 세팅 (10분)
-
-1. **Supabase**: 새 프로젝트 생성 → SQL Editor에서 `schema.sql` 전체 실행
-2. **키 준비**: Supabase URL + service_role key (Settings → API),
-   Anthropic API 키, OpenAI API 키
-3. **환경변수**: `cp .env.example .env` 후 값 채우기
-4. **실행**:
+Windows에서 편집한 `.env`를 WSL에서 `source`할 경우 CRLF가 환경변수에 포함될 수
+있습니다. 다음 명령으로 줄바꿈을 정리할 수 있습니다.
 
 ```bash
-pip install -r requirements.txt
+sed -i 's/\r$//' .env
+```
+
+## 설치 및 실행
+
+`uv`를 사용하는 방법을 권장합니다.
+
+```bash
+uv python install 3.12
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+
+source .venv/bin/activate
 uvicorn main:app --reload --port 8000
 ```
 
-→ http://localhost:8000
+브라우저에서 `http://localhost:8000`으로 접속합니다.
+
+일반 `venv`와 `pip`를 사용해도 됩니다.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m uvicorn main:app --reload --port 8000
+```
+
+### WSL 회사 인증서
+
+회사 TLS 인증서를 WSL 시스템 저장소가 이미 신뢰하는 경우 Python에도 시스템 CA
+번들을 지정합니다.
+
+```bash
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+```
+
+매번 설정하지 않으려면 `.venv/bin/activate` 마지막에 같은 줄을 추가할 수 있습니다.
+
+```bash
+echo 'export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt' >> .venv/bin/activate
+```
 
 ## 사용법
 
-- **넣기**: Slack에서 스레드 드래그 복사 → 왼쪽 박스에 붙여넣기 → 저장 (Ctrl/⌘+Enter)
-  - 사내 메일도 본문 복사해서 동일하게
-  - 그냥 메모("A프로젝트 담당자는 김OO") 도 됨
-- **묻기**: 오른쪽 채팅에서 질문. 답변 아래 칩에 마우스를 올리면 근거 스니펫 표시
-- **관리**: 최근 저장 목록에서 × 로 개별 삭제
+### 저장
 
-## 조정 포인트
+왼쪽 입력란에 Slack 스레드, 이메일 또는 메모를 붙여넣고 `저장하기`를 누릅니다.
+`Ctrl+Enter` 또는 `Cmd+Enter`로도 저장할 수 있습니다.
 
-- `SIM_THRESHOLD` (기본 0.25): 높이면 "모름" 응답이 늘고 오답이 줄어듦
-- `PARSER_SYSTEM` / `ANSWER_SYSTEM` 프롬프트: main.py 상단에서 수정
-- 긴 스레드는 요약 청크가 자동으로 함께 저장됨 (`metadata.is_summary`)
+저장 레코드에는 다음 메타데이터가 포함됩니다.
 
-## 주의
+```json
+{
+  "person": "조재경",
+  "project": "Hynix G4",
+  "status": "진행 중",
+  "work_date": "2026-08-06",
+  "due_date": null,
+  "category": "업무",
+  "tags": ["ATL", "Langflow", "인증시험"]
+}
+```
 
-- service_role 키는 RLS를 우회하므로 **로컬 실행 전용**. 배포하려면 anon key + RLS 정책으로 전환할 것.
-- 사내 메일/메시지를 외부 API(Anthropic/OpenAI/Supabase)로 보내는 구조이므로, 회사 보안 정책 확인 권장.
+기존 레코드에 새 필드가 없으면 발신자, 태그, 본문, 저장일에서 표시용 값을
+자동으로 보완합니다.
 
-## 배포 (항상 켜두기)
+### 검색
 
-로컬에서는 `APP_PASSWORD`를 비워두면 로그인 없이 동작하고,
-배포할 땐 반드시 설정해야 합니다. 미설정 상태로 배포하면 URL을 아는 누구나 데이터를 읽고 쓸 수 있어요.
+오른쪽 질문란에서 자연어로 검색합니다.
 
-### 공통 준비
+```text
+최윤서 매니저는 무엇을 하고 있어?
+지난주 조재경 매니저가 완료한 업무는?
+이번 달 ATL 진행 중 업무를 알려줘
+```
 
-환경변수 2개 추가:
-- `APP_PASSWORD`: 접속 비밀번호 (본인만 아는 값)
-- `APP_SECRET`: 세션 서명용 랜덤 문자열 — `python -c "import secrets; print(secrets.token_hex(24))"` 로 생성
+### 관리
 
-### Render (무료 티어)
+- 담당자, 프로젝트, 상태, 시작일, 종료일로 최근 기록 필터링
+- 유형 탭으로 업무와 계정·비밀번호, 자료·강의를 분리해서 조회
+- 최근 기록은 10건씩 표시하고 `더 보기`로 추가 조회
+- 태그를 눌러 관련 기록만 조회
+- `×` 버튼으로 개별 기록 삭제
+- `만료 정리`로 만료된 기록 일괄 삭제
 
-1. 이 폴더를 GitHub 저장소로 push (`.env`는 .gitignore — 절대 커밋 금지)
-2. render.com → New → Web Service → 저장소 연결
-3. Runtime: Docker 자동 감지됨
-4. Environment 탭에 `.env`의 모든 값 입력 (SUPABASE_URL, SUPABASE_SERVICE_KEY, OPENAI_API_KEY, APP_PASSWORD, APP_SECRET)
-5. 배포 완료 → `https://xxx.onrender.com` 접속 → 비밀번호 입력
+## 검색 설정
 
-무료 티어는 15분 미접속 시 잠들었다가 첫 요청에 ~30초 걸려 깨어남. 개인용으론 충분.
+- `SIM_THRESHOLD`: 벡터 검색 최소 유사도. 높이면 누락이 늘고 오답이 줄어듭니다.
+- `DUP_THRESHOLD`: 기존 기억을 중복으로 판단해 교체하는 유사도입니다.
+- `TOP_K`: 답변 생성에 사용할 최대 검색 결과 수입니다.
+- `PARSER_SYSTEM`: 저장 시 구조화 규칙입니다.
+- `ANSWER_SYSTEM`: 저장된 정보로 답변하는 규칙입니다.
 
-### Railway (월 $5, 안 잠듦)
+## 포트 확인과 종료
 
-railway.app → New Project → Deploy from GitHub → 저장소 선택 → Variables에 환경변수 입력. 나머지 동일.
+```bash
+ss -ltnp | grep ':8000'
+fuser -v 8000/tcp
+fuser -k 8000/tcp
+```
 
-### 배포 후 확인
+현재 터미널에서 실행한 Uvicorn은 `Ctrl+C`로 종료합니다.
 
-- `https://.../healthz` 가 `{"status":"ok"}` 반환하면 서버 정상
-- 첫 접속 시 비밀번호 화면이 뜨는지 확인 (안 뜨면 APP_PASSWORD 미설정 상태!)
-- 로그인 세션은 30일 유지, 폰 브라우저에서도 동일하게 사용 가능
+## 배포
+
+로컬에서는 `APP_PASSWORD`가 비어 있으면 로그인 없이 동작합니다. 외부에 배포할
+때는 반드시 `APP_PASSWORD`와 16자 이상의 `APP_SECRET`을 설정합니다.
+
+```bash
+python -c "import secrets; print(secrets.token_hex(24))"
+```
+
+Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연결하고 다음 값을
+환경변수로 등록합니다.
+
+- `OPENAI_API_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_KEY`
+- `APP_PASSWORD`
+- `APP_SECRET`
+
+배포 후 `/healthz`가 `{"status":"ok"}`를 반환하는지 확인합니다.
+
+## 보안 주의사항
+
+- `.env`는 Git에 커밋하지 않습니다.
+- API 키가 로그나 대화에 노출되면 즉시 폐기하고 새로 발급합니다.
+- 저장 내용과 질문은 처리 과정에서 OpenAI와 Supabase로 전송됩니다.
+- API 키나 비밀번호를 기억으로 저장할 수 있지만 외부 API로 전송된다는 점을
+  이해한 경우에만 사용해야 합니다.
+- 외부 배포에서는 service role 키 대신 사용자 인증과 RLS 정책 적용을 권장합니다.

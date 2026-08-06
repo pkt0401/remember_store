@@ -8,9 +8,11 @@ Memory Agent — 복붙하면 저장, 물어보면 답변.
 import hashlib
 import hmac
 import json
+import logging
 import os
+import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -23,8 +25,11 @@ from supabase import create_client
 
 load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]  # service_role key (로컬 전용)
+logger = logging.getLogger(__name__)
+
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"].strip()  # service_role key (로컬 전용)
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")  # 설정하면 로그인 필수 (배포 시 필수)
 APP_SECRET = os.getenv("APP_SECRET", "")      # 세션 서명용 랜덤 문자열 (배포 시 필수)
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
@@ -34,7 +39,7 @@ DUP_THRESHOLD = float(os.getenv("DUP_THRESHOLD", "0.92"))  # 이 이상 유사�
 TOP_K = int(os.getenv("TOP_K", "8"))
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-oai = OpenAI()  # OPENAI_API_KEY
+oai = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(title="Memory Agent")
 
@@ -112,6 +117,112 @@ def embed(texts: list[str]) -> list[list[float]]:
     return [d.embedding for d in resp.data]
 
 
+VALID_STATUSES = {"할 일", "진행 중", "완료", "보류", "참고"}
+VALID_RECORD_TYPES = {"work", "credential", "system", "link", "course", "note"}
+SECTION_TYPES = {
+    "work": {"work"},
+    "access": {"credential", "system"},
+    "resources": {"link", "course"},
+    "notes": {"note"},
+}
+
+
+def iso_date(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"\d{4}-\d{2}-\d{2}", value)
+    return match.group(0) if match else None
+
+
+def normalize_metadata(record: dict) -> dict:
+    meta = record.get("metadata") or {}
+    sender = str(meta.get("sender") or "").strip()
+    person = str(meta.get("person") or sender).strip()
+    status = str(meta.get("status") or "참고").strip()
+    meta["person"] = person
+    meta["project"] = str(meta.get("project") or "").strip()
+    meta["status"] = status if status in VALID_STATUSES else "참고"
+    meta["work_date"] = (
+        iso_date(meta.get("work_date"))
+        or iso_date(meta.get("msg_date"))
+        or date.today().isoformat()
+    )
+    meta["due_date"] = iso_date(meta.get("due_date"))
+    meta["category"] = str(meta.get("category") or "정보").strip()
+    record_type = str(meta.get("record_type") or "").strip()
+    if record_type not in VALID_RECORD_TYPES:
+        record_type = infer_record_type(record.get("content") or "", meta)
+    meta["record_type"] = record_type
+    return meta
+
+
+def infer_record_type(content: str, meta: Optional[dict] = None) -> str:
+    meta = meta or {}
+    lowered = content.lower()
+    if "[서비스 계정]" in content or "비밀번호:" in content or "임시pw" in lowered:
+        return "credential"
+    if "[서버 접속]" in content or "[개발 환경]" in content or "호스트:" in content:
+        return "system"
+    if "[강의 과정]" in content or ("과정명:" in content and "강의 목록:" in content):
+        return "course"
+    if "[참고 링크]" in content or "시연 영상" in content:
+        return "link"
+    category = str(meta.get("category") or "")
+    if category in {"업무", "일정", "의사결정"} or meta.get("sender"):
+        return "work"
+    return "note"
+
+
+def effective_metadata(item: dict) -> dict:
+    meta = dict(item.get("metadata") or {})
+    tags = [tag for tag in meta.get("tags") or [] if isinstance(tag, str)]
+    content = item.get("content") or ""
+    if not meta.get("person"):
+        meta["person"] = str(meta.get("sender") or "").strip()
+    if not meta.get("project"):
+        project_tags = [tag for tag in tags if "Innovation" not in tag and "팀" not in tag]
+        meta["project"] = project_tags[0] if project_tags else (tags[0] if tags else "")
+    if not meta.get("status"):
+        if "진행 중" in content:
+            meta["status"] = "진행 중"
+        elif "할 일" in content:
+            meta["status"] = "할 일"
+        elif "완료" in content:
+            meta["status"] = "완료"
+        else:
+            meta["status"] = "참고"
+    if not iso_date(meta.get("work_date")):
+        meta["work_date"] = iso_date(meta.get("msg_date")) or item["created_at"][:10]
+    meta.setdefault("due_date", None)
+    meta.setdefault("category", "정보")
+    record_type = str(meta.get("record_type") or "")
+    meta["record_type"] = (
+        record_type if record_type in VALID_RECORD_TYPES
+        else infer_record_type(content, meta)
+    )
+    return meta
+
+
+def question_date_range(question: str) -> Optional[tuple[date, date]]:
+    today = date.today()
+    if "오늘" in question:
+        return today, today
+    if "어제" in question:
+        yesterday = today - timedelta(days=1)
+        return yesterday, yesterday
+    if "지난주" in question or "저번주" in question:
+        this_monday = today - timedelta(days=today.weekday())
+        return this_monday - timedelta(days=7), this_monday - timedelta(days=1)
+    if "이번 주" in question or "이번주" in question:
+        monday = today - timedelta(days=today.weekday())
+        return monday, monday + timedelta(days=6)
+    if "이번 달" in question or "이번달" in question:
+        month_start = today.replace(day=1)
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return month_start, next_month - timedelta(days=1)
+    return None
+
+
 PARSER_SYSTEM = """당신은 텍스트 파서입니다. 사용자가 붙여넣은 텍스트를 분석해
 지식 저장소에 넣을 레코드로 변환합니다.
 
@@ -127,9 +238,16 @@ PARSER_SYSTEM = """당신은 텍스트 파서입니다. 사용자가 붙여넣�
 3. 하나의 주제 단위(대략 300~800자)로 청크를 나눔. 짧으면 한 청크.
 4. 청크가 3개 이상인 긴 스레드/메일이면, 전체 내용을 3~5문장으로 요약한
    summary 청크를 맨 앞에 추가 (metadata.is_summary = true).
-5. metadata에 추출 가능한 것만 넣기: sender(주 화자/발신자), channel(추정 채널명),
-   subject(메일 제목), msg_date(원문에 날짜가 있으면 "YYYY-MM-DD" 등 원문 표기 그대로),
-   participants(대화 참여자 배열).
+5. metadata에 다음 구조화 필드를 가능한 한 추출:
+   - sender: 주 화자/발신자, person: 업무 담당자
+   - project: 프로젝트명, category: 업무/일정/의사결정/참고자료 중 하나
+   - record_type: work/credential/system/link/course/note 중 하나
+     [서비스 계정]은 credential, [서버 접속]과 [개발 환경]은 system,
+     [참고 링크]는 link, [강의 과정]은 course, 일반 업무 보고는 work로 분류
+   - status: "할 일"/"진행 중"/"완료"/"보류"/"참고" 중 하나
+   - work_date: 실제 업무 기준일 YYYY-MM-DD, due_date: 마감일 YYYY-MM-DD 또는 null
+   - channel, subject, msg_date, participants
+   날짜가 없으면 work_date는 오늘 날짜를 사용. 한 청크에 상태가 섞이면 상태별로 청크를 분리.
 6. 시효 판단: 내용이 특정 날짜에 종속되면(회의 일정, 마감, 이벤트, 기간 한정 공지)
    해당 레코드의 expires_at을 "이벤트 종료일 + 7일"의 ISO 날짜("YYYY-MM-DDT23:59:59+09:00")로 설정.
    시효가 없는 정보(담당자, 정책, 프로세스, 일반 지식)는 expires_at을 null로.
@@ -187,36 +305,48 @@ def ingest(req: IngestRequest):
     if not text:
         raise HTTPException(400, "빈 텍스트입니다.")
 
-    parsed = parse_pasted_text(text)
+    try:
+        parsed = parse_pasted_text(text)
+    except Exception:
+        logger.exception("Failed to parse pasted text")
+        raise HTTPException(502, "AI 텍스트 분석에 실패했습니다. 서버 로그를 확인하세요.")
     source = parsed.get("source", "note")
     records = parsed["records"]
 
     batch_id = str(uuid.uuid4())
     contents = [r["content"] for r in records]
-    vectors = embed(contents)
+    try:
+        vectors = embed(contents)
+    except Exception:
+        logger.exception("Failed to create embeddings")
+        raise HTTPException(502, "AI 임베딩 생성에 실패했습니다. 서버 로그를 확인하세요.")
 
     rows, replaced = [], 0
-    for r, v in zip(records, vectors):
-        # 중복 감지: 거의 같은 기억이 이미 있으면 옛것을 지우고 새것으로 교체
-        dup = sb.rpc("match_memories", {
-            "query_embedding": v, "match_count": 1,
-        }).execute().data
-        if dup and dup[0]["similarity"] >= DUP_THRESHOLD:
-            sb.table("memories").delete().eq("id", dup[0]["id"]).execute()
-            replaced += 1
+    try:
+        for r, v in zip(records, vectors):
+            # 중복 감지: 거의 같은 기억이 이미 있으면 옛것을 지우고 새것으로 교체
+            dup = sb.rpc("match_memories", {
+                "query_embedding": v, "match_count": 1,
+            }).execute().data
+            if dup and dup[0]["similarity"] >= DUP_THRESHOLD:
+                sb.table("memories").delete().eq("id", dup[0]["id"]).execute()
+                replaced += 1
 
-        meta = r.get("metadata") or {}
-        meta["batch_id"] = batch_id
-        meta["tags"] = [t for t in (r.get("tags") or []) if isinstance(t, str)][:4]
-        rows.append({
-            "source": source,
-            "content": r["content"],
-            "metadata": meta,
-            "embedding": v,
-            "expires_at": r.get("expires_at") or None,
-        })
+            meta = normalize_metadata(r)
+            meta["batch_id"] = batch_id
+            meta["tags"] = [t for t in (r.get("tags") or []) if isinstance(t, str)][:4]
+            rows.append({
+                "source": source,
+                "content": r["content"],
+                "metadata": meta,
+                "embedding": v,
+                "expires_at": r.get("expires_at") or None,
+            })
 
-    sb.table("memories").insert(rows).execute()
+        sb.table("memories").insert(rows).execute()
+    except Exception:
+        logger.exception("Failed to write memories to Supabase")
+        raise HTTPException(502, "기억 저장소 연결 또는 저장에 실패했습니다. 서버 로그를 확인하세요.")
 
     return {
         "source": source,
@@ -258,6 +388,39 @@ def ask(req: AskRequest):
     }).execute()
     hits = res.data or []
     hits = [h for h in hits if h["similarity"] >= SIM_THRESHOLD]
+
+    # 사람 이름처럼 짧고 고유한 검색어는 임베딩 유사도가 낮을 수 있으므로
+    # 본문 정확 일치 결과를 벡터 검색보다 우선해서 합친다.
+    names = set(re.findall(r"([가-힣]{2,4})\s*(?:매니저|님)", question))
+    exact_hits = []
+    for name in names:
+        result = (
+            sb.table("memories")
+            .select("id,source,content,metadata,created_at")
+            .ilike("content", f"%{name}%")
+            .limit(TOP_K)
+            .execute()
+        )
+        for row in result.data or []:
+            row["similarity"] = 1.0
+            exact_hits.append(row)
+
+    seen_ids = {h["id"] for h in exact_hits}
+    hits = exact_hits + [h for h in hits if h["id"] not in seen_ids]
+
+    date_range = question_date_range(question)
+    if date_range:
+        start, end = (value.isoformat() for value in date_range)
+        dated = sb.table("memories").select(
+            "id,source,content,metadata,created_at"
+        ).limit(200).execute().data or []
+        for row in dated:
+            meta = row.get("metadata") or {}
+            work_date = iso_date(meta.get("work_date")) or row["created_at"][:10]
+            if start <= work_date <= end and row["id"] not in seen_ids:
+                row["similarity"] = 0.9
+                hits.insert(0, row)
+                seen_ids.add(row["id"])
 
     # 질문에 등장하는 알려진 태그 → 해당 태그 가진 기억에 가산점
     q_lower = question.lower()
@@ -319,15 +482,73 @@ def ask(req: AskRequest):
 
 
 @app.get("/api/memories")
-def list_memories(limit: int = 30):
+def list_memories(
+    limit: int = 100,
+    person: Optional[str] = None,
+    project: Optional[str] = None,
+    status: Optional[str] = None,
+    section: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
     res = (
         sb.table("memories")
         .select("id, source, content, metadata, created_at, expires_at")
         .order("created_at", desc=True)
-        .limit(limit)
+        .limit(500)
         .execute()
     )
-    return res.data
+    items = res.data or []
+
+    def matches(item: dict) -> bool:
+        meta = effective_metadata(item)
+        item_person = str(meta.get("person") or "")
+        item_project = str(meta.get("project") or "")
+        item_status = str(meta.get("status") or "참고")
+        work_date = iso_date(meta.get("work_date")) or item["created_at"][:10]
+        return (
+            (not person or item_person == person)
+            and (not project or item_project == project)
+            and (not status or item_status == status)
+            and (not section or meta.get("record_type") in SECTION_TYPES.get(section, set()))
+            and (not date_from or work_date >= date_from)
+            and (not date_to or work_date <= date_to)
+        )
+
+    filtered = [item for item in items if matches(item)]
+    for item in filtered:
+        item["metadata"] = effective_metadata(item)
+    filtered.sort(
+        key=lambda item: (
+            iso_date((item.get("metadata") or {}).get("work_date"))
+            or item["created_at"][:10],
+            item["created_at"],
+        ),
+        reverse=True,
+    )
+    return filtered[:min(max(limit, 1), 500)]
+
+
+@app.get("/api/memory-filters")
+def memory_filters():
+    rows = sb.table("memories").select(
+        "content,metadata,created_at"
+    ).limit(1000).execute().data or []
+
+    def values(key: str, fallback: Optional[str] = None) -> list[str]:
+        result = set()
+        for row in rows:
+            meta = effective_metadata(row)
+            value = meta.get(key) or (meta.get(fallback) if fallback else None)
+            if isinstance(value, str) and value.strip():
+                result.add(value.strip())
+        return sorted(result)
+
+    return {
+        "people": values("person", "sender"),
+        "projects": values("project"),
+        "statuses": sorted(VALID_STATUSES),
+    }
 
 
 @app.delete("/api/memories/expired")
