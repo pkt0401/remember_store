@@ -105,6 +105,11 @@ class IngestRequest(BaseModel):
     text: str
 
 
+class UpdateMemoryRequest(BaseModel):
+    content: str
+    metadata: Optional[dict] = None
+
+
 class AskRequest(BaseModel):
     question: str
     history: Optional[list[dict]] = None  # [{"role": "user"|"assistant", "content": "..."}]
@@ -556,6 +561,54 @@ def delete_expired():
     now = datetime.now(timezone.utc).isoformat()
     res = sb.table("memories").delete().lt("expires_at", now).execute()
     return {"deleted": len(res.data or [])}
+
+
+@app.patch("/api/memories/{memory_id}")
+def update_memory(memory_id: str, req: UpdateMemoryRequest):
+    content = req.content.strip()
+    if not content:
+        raise HTTPException(400, "본문은 비워둘 수 없습니다.")
+
+    existing = (
+        sb.table("memories")
+        .select("id,source,content,metadata,created_at,expires_at")
+        .eq("id", memory_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not existing:
+        raise HTTPException(404, "수정할 기억을 찾지 못했습니다.")
+
+    editable_keys = {
+        "person", "project", "status", "work_date", "due_date",
+        "category", "record_type", "tags", "sender", "subject", "channel",
+    }
+    meta = dict(existing[0].get("metadata") or {})
+    for key, value in (req.metadata or {}).items():
+        if key in editable_keys:
+            meta[key] = value
+
+    record = {"content": content, "metadata": meta}
+    meta = normalize_metadata(record)
+    meta["tags"] = [
+        tag.strip() for tag in meta.get("tags") or []
+        if isinstance(tag, str) and tag.strip()
+    ][:8]
+
+    try:
+        vector = embed([content])[0]
+        result = (
+            sb.table("memories")
+            .update({"content": content, "metadata": meta, "embedding": vector})
+            .eq("id", memory_id)
+            .execute()
+        )
+    except Exception:
+        logger.exception("Failed to update memory")
+        raise HTTPException(502, "기억 수정에 실패했습니다. 서버 로그를 확인하세요.")
+
+    return (result.data or [{"id": memory_id, "content": content, "metadata": meta}])[0]
 
 
 @app.delete("/api/memories/{memory_id}")

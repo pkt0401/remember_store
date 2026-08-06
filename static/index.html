@@ -103,6 +103,8 @@
     cursor: pointer; font-size: 15px; padding: 2px 4px;
   }
   .mem button:hover { color: #8C3B2E; }
+  .mem-actions { display: flex; flex-direction: column; gap: 3px; }
+  .mem-actions button.edit:hover { color: var(--pine); }
   .chip {
     font-family: var(--mono); font-size: 10.5px; font-weight: 600;
     padding: 3px 8px; border-radius: 5px; white-space: nowrap; margin-top: 1px;
@@ -222,6 +224,33 @@
   }
   .login-err { color: #8C3B2E; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
 
+  /* ---- edit ---- */
+  #editOverlay {
+    display: none; position: fixed; inset: 0; z-index: 20;
+    background: rgba(23, 33, 29, .45); align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  #editOverlay.show { display: flex; }
+  .edit-dialog {
+    width: min(680px, 100%); max-height: calc(100vh - 40px); overflow-y: auto;
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+  }
+  .edit-form { padding: 16px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .edit-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .edit-field.full { grid-column: 1 / -1; }
+  .edit-field label { color: var(--ink-soft); font-size: 11px; font-weight: 600; }
+  .edit-field input, .edit-field select, .edit-field textarea {
+    width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px;
+    color: var(--ink); background: #fff; font: 13px "Pretendard Variable", sans-serif;
+    outline: none;
+  }
+  .edit-field textarea { min-height: 180px; resize: vertical; }
+  .edit-field input:focus, .edit-field select:focus, .edit-field textarea:focus { border-color: var(--pine); }
+  .edit-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 18px 16px; }
+  .edit-actions button { border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  .edit-actions .cancel { background: #fff; color: var(--ink-soft); }
+  .edit-actions .confirm { background: var(--pine); border-color: var(--pine); color: #fff; }
+
   /* ---- chat ---- */
   #chat {
     display: flex; flex-direction: column;
@@ -338,6 +367,24 @@
   </section>
 </main>
 
+<div id="editOverlay" onclick="if(event.target===this)closeEdit()">
+  <div class="edit-dialog" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+    <div class="panel-head"><b id="editTitle">기억 수정</b><span>본문을 바꾸면 검색 임베딩도 갱신됩니다</span></div>
+    <div class="edit-form">
+      <div class="edit-field full"><label for="editContent">본문</label><textarea id="editContent"></textarea></div>
+      <div class="edit-field"><label for="editPerson">담당자</label><input id="editPerson"></div>
+      <div class="edit-field"><label for="editProject">프로젝트</label><input id="editProject"></div>
+      <div class="edit-field"><label for="editStatus">상태</label><select id="editStatus"><option>할 일</option><option>진행 중</option><option>완료</option><option>보류</option><option>참고</option></select></div>
+      <div class="edit-field"><label for="editType">유형</label><select id="editType"><option value="work">업무</option><option value="credential">서비스 계정</option><option value="system">서버·개발 환경</option><option value="link">자료·링크</option><option value="course">강의 과정</option><option value="note">메모</option></select></div>
+      <div class="edit-field"><label for="editWorkDate">업무일</label><input id="editWorkDate" type="date"></div>
+      <div class="edit-field"><label for="editDueDate">마감일</label><input id="editDueDate" type="date"></div>
+      <div class="edit-field"><label for="editCategory">카테고리</label><input id="editCategory"></div>
+      <div class="edit-field"><label for="editTags">태그</label><input id="editTags" placeholder="쉼표로 구분"></div>
+    </div>
+    <div class="edit-actions"><button class="cancel" onclick="closeEdit()">취소</button><button class="confirm" id="editSaveBtn" onclick="saveEdit()">저장</button></div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const chipName = { slack: "SLACK", email: "MAIL", note: "MEMO" };
@@ -378,6 +425,8 @@ let activeTag = null;
 let activeSection = "";
 let filtersLoaded = false;
 let visibleLimit = 10;
+let memoryById = new Map();
+let editingMemoryId = null;
 
 function optionHtml(value) {
   return `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
@@ -442,6 +491,7 @@ async function loadRecent() {
   ]);
   const items = await r.json();
   const tags = await tr.json();
+  memoryById = new Map(items.map(item => [item.id, item]));
 
   $("tagBar").innerHTML = tags.slice(0, 12).map(t =>
     `<span class="tag${t.tag === activeTag ? " on" : ""}" onclick="filterTag('${escapeHtml(t.tag)}')">${escapeHtml(t.tag)} ${t.count}</span>`
@@ -482,7 +532,7 @@ async function loadRecent() {
     return `${dateHeader}<div class="mem${isExpired ? " expired" : ""}">
       <span class="chip ${m.source}">${chipName[m.source] || m.source}</span>
       ${body}
-      <button title="삭제" onclick="del('${m.id}')">×</button>
+      <div class="mem-actions"><button class="edit" title="수정" onclick="openEdit('${m.id}')">✎</button><button title="삭제" onclick="del('${m.id}')">×</button></div>
     </div>`;
   }).join("") : `<div class="mem"><div class="txt" style="color:var(--ink-soft)">${activeTag ? "이 태그의 기억이 없어요." : "저장된 기억이 아직 없어요."}</div></div>`;
   $("cleanBtn").style.display = expiredCount ? "" : "none";
@@ -540,6 +590,71 @@ async function del(id) {
   await fetch(`/api/memories/${id}`, { method: "DELETE" });
   loadRecent();
 }
+
+function openEdit(id) {
+  const memory = memoryById.get(id);
+  if (!memory) return;
+  const meta = memory.metadata || {};
+  editingMemoryId = id;
+  $("editContent").value = memory.content || "";
+  $("editPerson").value = meta.person || meta.sender || "";
+  $("editProject").value = meta.project || "";
+  $("editStatus").value = meta.status || "참고";
+  $("editType").value = meta.record_type || "note";
+  $("editWorkDate").value = meta.work_date || "";
+  $("editDueDate").value = meta.due_date || "";
+  $("editCategory").value = meta.category || "";
+  $("editTags").value = (meta.tags || []).join(", ");
+  $("editOverlay").classList.add("show");
+  $("editContent").focus();
+}
+
+function closeEdit() {
+  editingMemoryId = null;
+  $("editOverlay").classList.remove("show");
+}
+
+async function saveEdit() {
+  if (!editingMemoryId) return;
+  const content = $("editContent").value.trim();
+  if (!content) return alert("본문을 입력하세요.");
+  const button = $("editSaveBtn");
+  button.disabled = true;
+  button.textContent = "저장 중…";
+  try {
+    const response = await fetch(`/api/memories/${editingMemoryId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content,
+        metadata: {
+          person: $("editPerson").value.trim(),
+          project: $("editProject").value.trim(),
+          status: $("editStatus").value,
+          record_type: $("editType").value,
+          work_date: $("editWorkDate").value || null,
+          due_date: $("editDueDate").value || null,
+          category: $("editCategory").value.trim(),
+          tags: $("editTags").value.split(",").map(tag => tag.trim()).filter(Boolean),
+        },
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "수정 실패");
+    closeEdit();
+    filtersLoaded = false;
+    await loadRecent();
+  } catch (error) {
+    alert(`수정 실패: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "저장";
+  }
+}
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && $("editOverlay").classList.contains("show")) closeEdit();
+});
 
 function addMsg(cls, html) {
   const empty = $("log").querySelector(".empty");
