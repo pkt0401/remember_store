@@ -715,7 +715,9 @@ function renderAnswerMarkdown(text) {
       listOpen = false;
     }
   };
-  const inline = value => escapeHtml(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const inline = value => escapeHtml(value)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
