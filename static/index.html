@@ -260,6 +260,14 @@
   .msg { max-width: 82%; padding: 11px 15px; border-radius: 12px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; }
   .msg.user { align-self: flex-end; background: var(--ink); color: #fff; border-bottom-right-radius: 4px; }
   .msg.bot  { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .answer { white-space: normal; }
+  .answer h3 { margin: 12px 0 5px; font-size: 14px; font-weight: 750; color: var(--ink); }
+  .answer h3:first-child { margin-top: 0; }
+  .answer p { margin: 0 0 6px; }
+  .answer p:last-child { margin-bottom: 0; }
+  .answer ul { margin: 2px 0 10px; padding-left: 19px; }
+  .answer li { margin: 3px 0; }
+  .answer strong { font-weight: 750; color: var(--ink); }
   .msg.bot .srcs { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); display: flex; flex-wrap: wrap; gap: 6px; }
   .srcs .chip { cursor: pointer; }
   .raw {
@@ -685,7 +693,7 @@ function saveChatHistory() {
 }
 
 function botMessageHtml(answer, sources = []) {
-  let html = escapeHtml(answer);
+  let html = `<div class="answer">${renderAnswerMarkdown(answer)}</div>`;
   if (sources.length) {
     html += `<div class="srcs">` + sources.map((s, i) =>
       `<span class="chip ${s.source}" onclick="toggleRaw(this, ${i})">${chipName[s.source] || s.source} · 원문</span>`
@@ -695,6 +703,42 @@ function botMessageHtml(answer, sources = []) {
     ).join("");
   }
   return html;
+}
+
+function renderAnswerMarkdown(text) {
+  const lines = String(text).split(/\r?\n/);
+  const parts = [];
+  let listOpen = false;
+  const closeList = () => {
+    if (listOpen) {
+      parts.push("</ul>");
+      listOpen = false;
+    }
+  };
+  const inline = value => escapeHtml(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+    if (line.startsWith("### ")) {
+      closeList();
+      parts.push(`<h3>${inline(line.slice(4))}</h3>`);
+    } else if (line.startsWith("- ")) {
+      if (!listOpen) {
+        parts.push("<ul>");
+        listOpen = true;
+      }
+      parts.push(`<li>${inline(line.slice(2))}</li>`);
+    } else {
+      closeList();
+      parts.push(`<p>${inline(line)}</p>`);
+    }
+  }
+  closeList();
+  return parts.join("");
 }
 
 function renderChatHistory() {

@@ -14,6 +14,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -358,6 +359,18 @@ ANSWER_SYSTEM = """당신은 사용자의 개인 메모리 저장소를 검색�
 - 검색 결과끼리 내용이 충돌하면 저장 날짜가 최신인 쪽을 우선하되, 충돌 사실을 한 문장으로 알릴 것.
 - 한국어로 간결하게."""
 
+
+def load_answer_harness() -> str:
+    path = Path(__file__).with_name("harness.md")
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        logger.warning("Answer harness file is unavailable")
+        return ""
+
+
+ANSWER_HARNESS = load_answer_harness()
+
 FOLLOWUP_PATTERN = re.compile(
     r"그\s*중|그거|그것|그\s*사람|그분|그\s*프로젝트|그\s*업무|"
     r"해당|위(?:의|에서)?|앞서|방금|거기|이어서|나머지|"
@@ -505,26 +518,45 @@ def ask(req: AskRequest):
     for name in names:
         for catalog_row in catalog:
             meta = catalog_row.get("metadata") or {}
-            if name in (catalog_row.get("content") or "") or name == meta.get("person"):
+            content = (catalog_row.get("content") or "").lstrip()
+            belongs_to_person = (
+                name == meta.get("person")
+                or name == meta.get("sender")
+                or content.startswith(f"{name}:")
+            )
+            if belongs_to_person:
                 row = dict(catalog_row)
                 row["similarity"] = 1.0
                 exact_hits.append(row)
 
-    seen_ids = {h["id"] for h in exact_hits}
-    hits = exact_hits + [h for h in hits if h["id"] not in seen_ids]
+    if exact_hits:
+        # 특정 인물 질문에는 다른 문서의 벡터 유사도를 섞지 않는다.
+        hits = exact_hits
+    else:
+        seen_ids = {h["id"] for h in exact_hits}
+        hits = exact_hits + [h for h in hits if h["id"] not in seen_ids]
     seen_ids = {h["id"] for h in hits}
 
     date_range = question_date_range(search_question)
     if date_range:
         start, end = (value.isoformat() for value in date_range)
-        for catalog_row in catalog:
-            row = dict(catalog_row)
-            meta = row.get("metadata") or {}
-            work_date = iso_date(meta.get("work_date")) or row["created_at"][:10]
-            if start <= work_date <= end and row["id"] not in seen_ids:
-                row["similarity"] = 0.9
-                hits.insert(0, row)
-                seen_ids.add(row["id"])
+        if exact_hits:
+            hits = [
+                hit for hit in hits
+                if start <= (
+                    iso_date((hit.get("metadata") or {}).get("work_date"))
+                    or hit["created_at"][:10]
+                ) <= end
+            ]
+        else:
+            for catalog_row in catalog:
+                row = dict(catalog_row)
+                meta = row.get("metadata") or {}
+                work_date = iso_date(meta.get("work_date")) or row["created_at"][:10]
+                if start <= work_date <= end and row["id"] not in seen_ids:
+                    row["similarity"] = 0.9
+                    hits.insert(0, row)
+                    seen_ids.add(row["id"])
 
     # 질문에 등장하는 알려진 태그 → 해당 태그 가진 기억에 가산점
     q_lower = search_question.lower()
@@ -565,7 +597,10 @@ def ask(req: AskRequest):
     context = "\n\n".join(context_parts)
     today = date.today().strftime("%Y-%m-%d (%A)")
 
-    messages = [{"role": "system", "content": ANSWER_SYSTEM + f"\n\n오늘 날짜: {today}"}]
+    messages = [{
+        "role": "system",
+        "content": ANSWER_SYSTEM + f"\n\n오늘 날짜: {today}\n\n{ANSWER_HARNESS}",
+    }]
     for turn in (req.history or [])[-6:]:
         if turn.get("role") in ("user", "assistant") and turn.get("content"):
             messages.append({"role": turn["role"], "content": turn["content"]})
