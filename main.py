@@ -301,6 +301,47 @@ ANSWER_SYSTEM = """당신은 사용자의 개인 메모리 저장소를 검색�
 - 검색 결과끼리 내용이 충돌하면 저장 날짜가 최신인 쪽을 우선하되, 충돌 사실을 한 문장으로 알릴 것.
 - 한국어로 간결하게."""
 
+FOLLOWUP_PATTERN = re.compile(
+    r"그\s*중|그거|그것|그\s*사람|그분|그\s*프로젝트|그\s*업무|"
+    r"해당|위(?:의|에서)?|앞서|방금|거기|이어서|나머지|"
+    r"(?:완료|진행\s*중|보류)된?\s*(?:것|거)",
+    re.IGNORECASE,
+)
+
+REWRITE_SYSTEM = """대화의 마지막 사용자 질문을 기억 검색용 독립 질문으로 재작성하세요.
+규칙:
+- 이전 대화 없이도 대상 인물, 프로젝트, 기간, 조건을 알 수 있게 한 문장으로 작성
+- 원래 질문의 의도, 이름, 날짜, 상태 조건을 보존
+- 질문에 답하지 말고 재작성된 질문만 출력
+- 마크다운, 설명, 따옴표를 사용하지 말 것"""
+
+
+def contextualize_search_question(question: str, history: Optional[list[dict]]) -> str:
+    turns = [
+        {"role": turn.get("role"), "content": str(turn.get("content") or "")}
+        for turn in (history or [])[-6:]
+        if turn.get("role") in ("user", "assistant") and turn.get("content")
+    ]
+    if not turns or not FOLLOWUP_PATTERN.search(question):
+        return question
+
+    try:
+        response = oai.chat.completions.create(
+            model=CHAT_MODEL,
+            max_tokens=120,
+            temperature=0,
+            messages=[
+                {"role": "system", "content": REWRITE_SYSTEM},
+                *turns,
+                {"role": "user", "content": question},
+            ],
+        )
+        rewritten = (response.choices[0].message.content or "").strip().strip('"')
+        return rewritten if 3 <= len(rewritten) <= 500 else question
+    except Exception as exc:
+        logger.warning("Search question rewrite failed: %s", type(exc).__name__)
+        return question
+
 
 # ---------- endpoints ----------
 
@@ -386,7 +427,8 @@ def ask(req: AskRequest):
     if not question:
         raise HTTPException(400, "질문이 비어 있습니다.")
 
-    qvec = embed([question])[0]
+    search_question = contextualize_search_question(question, req.history)
+    qvec = embed([search_question])[0]
     res = sb.rpc("match_memories", {
         "query_embedding": qvec,
         "match_count": TOP_K * 3,  # 넓게 가져와서 태그로 리랭킹
@@ -396,7 +438,7 @@ def ask(req: AskRequest):
 
     # 사람 이름처럼 짧고 고유한 검색어는 임베딩 유사도가 낮을 수 있으므로
     # 본문 정확 일치 결과를 벡터 검색보다 우선해서 합친다.
-    names = set(re.findall(r"([가-힣]{2,4})\s*(?:매니저|님)", question))
+    names = set(re.findall(r"([가-힣]{2,4})\s*(?:매니저|님)", search_question))
     exact_hits = []
     for name in names:
         result = (
@@ -413,7 +455,7 @@ def ask(req: AskRequest):
     seen_ids = {h["id"] for h in exact_hits}
     hits = exact_hits + [h for h in hits if h["id"] not in seen_ids]
 
-    date_range = question_date_range(question)
+    date_range = question_date_range(search_question)
     if date_range:
         start, end = (value.isoformat() for value in date_range)
         dated = sb.table("memories").select(
@@ -428,7 +470,7 @@ def ask(req: AskRequest):
                 seen_ids.add(row["id"])
 
     # 질문에 등장하는 알려진 태그 → 해당 태그 가진 기억에 가산점
-    q_lower = question.lower()
+    q_lower = search_question.lower()
     matched_tags = {t for t in all_tags() if t.lower() in q_lower}
     if matched_tags:
         for h in hits:
@@ -438,7 +480,11 @@ def ask(req: AskRequest):
     hits = hits[:TOP_K]
 
     if not hits:
-        return {"answer": "저장된 정보에서 관련 내용을 찾지 못했어요. 먼저 관련 메시지를 붙여넣어 저장해 주세요.", "sources": []}
+        return {
+            "answer": "저장된 정보에서 관련 내용을 찾지 못했어요. 먼저 관련 메시지를 붙여넣어 저장해 주세요.",
+            "sources": [],
+            "resolved_question": search_question if search_question != question else None,
+        }
 
     def describe(h: dict) -> str:
         meta = h.get("metadata") or {}
@@ -472,6 +518,7 @@ def ask(req: AskRequest):
 
     return {
         "answer": answer,
+        "resolved_question": search_question if search_question != question else None,
         "sources": [
             {
                 "id": h["id"],
