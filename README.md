@@ -16,12 +16,12 @@ Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저
 - `harness.md` 기반 답변 근거·업무 보고 형식 관리
 - 제목, 상태 강조, 불릿과 링크를 지원하는 안전한 제한 Markdown 렌더링
 - `오늘`, `어제`, `이번 주`, `지난주`, `이번 달` 기반 날짜 검색
-- 중복 기억 교체, 만료된 기억 정리, 개별 삭제
+- 동일 본문 SHA-256 기반 원자적 갱신, 선삭제 없는 중복 처리, 만료 기억 정리
 - 저장된 본문과 담당자·프로젝트·상태·날짜·유형·태그 수정 및 재임베딩
 - 답변 근거 원문 조회
 - OpenAI 응답을 실시간으로 표시하는 스트리밍 채팅
 - 브라우저 `localStorage` 기반 대화 이력 복원 및 전체 삭제
-- 선택적 비밀번호 로그인
+- 사용자별 `viewer`·`editor`·`admin` 권한, 만료 세션, 로그아웃, 감사 로그
 
 ## 처리 구조
 
@@ -56,33 +56,60 @@ Redis를 추가하는 것이 적절합니다.
 
 ## Supabase 설정
 
-Supabase SQL Editor에서 다음 파일을 순서대로 실행합니다.
+Supabase SQL Editor에서 설치 상태에 맞는 SQL을 실행합니다.
 
-1. `schema.sql`
-2. `migration_expiry.sql`로 만료 필드와 검색 함수를 갱신
+- 신규 프로젝트: `schema.sql`
+- 기존 프로젝트: `migration_security.sql`
+- `migration_expiry.sql`은 과거 설치용 유통기한 마이그레이션이며,
+  `migration_security.sql`에 해당 변경이 포함되어 있습니다.
 
-`SUPABASE_SERVICE_KEY`는 RLS를 우회하므로 개인 로컬 실행 용도로만 사용해야 합니다.
+보안 마이그레이션은 `memories`와 `audit_logs`에 RLS를 적용하고 `anon`,
+`authenticated`, `PUBLIC`의 테이블/RPC 권한을 회수합니다. 백엔드는
+`SUPABASE_SERVICE_KEY`를 서버 환경변수로만 사용해야 하며 브라우저에 노출하면 안 됩니다.
 
 ## 환경변수
 
-프로젝트 루트에 `.env`를 만듭니다.
+`.env.example`을 참고해 프로젝트 루트에 `.env`를 만듭니다.
 
 ```dotenv
 OPENAI_API_KEY=your-openai-api-key
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=your-supabase-service-role-key
 
-# 선택 사항
+# 검색·처리 설정
 CHAT_MODEL=gpt-4o-mini
 EMBED_MODEL=text-embedding-3-small
 SIM_THRESHOLD=0.25
-DUP_THRESHOLD=0.92
 TOP_K=8
 CATALOG_CACHE_TTL=30
 MAX_CONTEXT_CHARS=12000
-APP_PASSWORD=
-APP_SECRET=
+MAX_CATALOG_ROWS=5000
+MAX_INGEST_CHARS=20000
+
+# 사용자별 인증
+APP_ENV=development
+APP_SECRET=replace-with-a-random-secret-at-least-16-characters
+APP_USERS_JSON='{"admin":{"password":"change-me","role":"admin"},"member":{"password":"change-me-too","role":"editor"}}'
+SESSION_TTL_SECONDS=43200
+COOKIE_SECURE=false
 ```
+
+역할별 권한은 다음과 같습니다.
+
+- `viewer`: 기억 조회와 질문
+- `editor`: `viewer` 권한 + 기억 저장과 수정
+- `admin`: 전체 권한 + 삭제, 만료 정리, 감사 로그 조회
+
+`APP_USERS_JSON`의 `password` 대신 `password_hash`에
+`pbkdf2_sha256$반복횟수$salt$hash` 값을 넣을 수 있습니다. 기존 단일 비밀번호
+설정인 `APP_PASSWORD`도 호환되며 로그인 사용자명은 `admin`, 권한도 `admin`으로
+기록됩니다. 운영 환경에서는 평문 `password`보다 `password_hash` 사용을 권장합니다.
+
+```bash
+python scripts/hash_password.py
+```
+
+출력된 전체 값을 해당 사용자의 `password_hash`에 넣습니다.
 
 Windows에서 편집한 `.env`를 WSL에서 `source`할 경우 CRLF가 환경변수에 포함될 수
 있습니다. 다음 명령으로 줄바꿈을 정리할 수 있습니다.
@@ -113,6 +140,15 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8000
+```
+
+### 테스트
+
+개발 의존성을 설치한 뒤 전체 테스트를 실행합니다.
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
 ```
 
 ### WSL 회사 인증서
@@ -173,13 +209,15 @@ echo 'export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt' >> .venv/bin/acti
 - `×` 버튼으로 개별 기록 삭제
 - 연필 버튼으로 본문과 구조화 메타데이터 수정
 - `만료 정리`로 만료된 기록 일괄 삭제
+- 관리자 헤더의 `활동 로그`에서 로그인, 질문, 저장, 수정, 삭제 이력 조회
 
 ## 검색 설정
 
 - `SIM_THRESHOLD`: 벡터 검색 최소 유사도. 높이면 누락이 늘고 오답이 줄어듭니다.
-- `DUP_THRESHOLD`: 기존 기억을 중복으로 판단해 교체하는 유사도입니다.
 - `TOP_K`: 답변 생성에 사용할 최대 검색 결과 수입니다.
 - `CATALOG_CACHE_TTL`: 키워드·태그 검색용 메모리 카탈로그 캐시 시간(초)입니다.
+- `MAX_CATALOG_ROWS`: 정확 검색용 활성 기억 카탈로그의 최대 행 수입니다.
+- `MAX_INGEST_CHARS`: 한 번에 붙여넣을 수 있는 최대 문자 수입니다.
 - `MAX_CONTEXT_CHARS`: 답변 모델에 전달할 검색 원문의 최대 문자 수입니다.
 - `PARSER_SYSTEM`: 저장 시 구조화 규칙입니다.
 - `ANSWER_SYSTEM`: 저장된 정보로 답변하는 규칙입니다.
@@ -197,8 +235,10 @@ fuser -k 8000/tcp
 
 ## 배포
 
-로컬에서는 `APP_PASSWORD`가 비어 있으면 로그인 없이 동작합니다. 외부에 배포할
-때는 반드시 `APP_PASSWORD`와 16자 이상의 `APP_SECRET`을 설정합니다.
+로컬 개발에서는 인증 설정이 비어 있으면 `local/admin`으로 동작합니다. Railway와
+Render 또는 `APP_ENV=production` 환경에서는 `APP_USERS_JSON`이나 `APP_PASSWORD`가
+없으면 서버가 시작되지 않습니다. 운영 환경에서는 반드시 사용자별 계정과 16자
+이상의 `APP_SECRET`을 설정합니다.
 
 ```bash
 python -c "import secrets; print(secrets.token_hex(24))"
@@ -210,7 +250,8 @@ Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연�
 - `OPENAI_API_KEY`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_KEY`
-- `APP_PASSWORD`
+- `APP_ENV=production`
+- `APP_USERS_JSON`
 - `APP_SECRET`
 
 배포 후 `/healthz`가 `{"status":"ok"}`를 반환하는지 확인합니다.
@@ -222,4 +263,6 @@ Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연�
 - 저장 내용과 질문은 처리 과정에서 OpenAI와 Supabase로 전송됩니다.
 - API 키나 비밀번호를 기억으로 저장할 수 있지만 외부 API로 전송된다는 점을
   이해한 경우에만 사용해야 합니다.
-- 외부 배포에서는 service role 키 대신 사용자 인증과 RLS 정책 적용을 권장합니다.
+- Supabase 테이블과 검색 RPC는 `service_role`만 접근할 수 있도록 제한되어 있습니다.
+  사용자 인증·권한 검사는 FastAPI에서 수행하고 모든 변경은 `audit_logs`에 기록합니다.
+- 응답에는 CSP, 프레임 차단, MIME 스니핑 차단 등 기본 브라우저 보안 헤더가 적용됩니다.

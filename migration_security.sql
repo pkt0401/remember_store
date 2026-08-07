@@ -1,25 +1,12 @@
--- Supabase SQL Editor에서 신규 프로젝트에 한 번 실행하세요.
+-- 기존 Supabase 프로젝트용 보안/무결성 마이그레이션입니다.
+-- 반복 실행할 수 있으며 기존 중복 레코드를 삭제하지 않습니다.
 
 begin;
 
-create extension if not exists vector;
 create extension if not exists pgcrypto;
 
-create table if not exists public.memories (
-  id uuid primary key default gen_random_uuid(),
-  source text not null default 'note',
-  content text not null,
-  content_hash text,
-  metadata jsonb not null default '{}'::jsonb,
-  embedding vector(1536),
-  expires_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
--- 이미 일부 스키마가 생성된 프로젝트에서도 최종 컬럼 구성을 보장합니다.
-alter table public.memories add column if not exists content_hash text;
 alter table public.memories add column if not exists expires_at timestamptz;
+alter table public.memories add column if not exists content_hash text;
 alter table public.memories add column if not exists updated_at timestamptz default now();
 
 update public.memories
@@ -29,8 +16,8 @@ where updated_at is null;
 alter table public.memories alter column updated_at set default now();
 alter table public.memories alter column updated_at set not null;
 
--- 동일 본문의 첫 레코드는 표준 해시를 사용합니다. 기존 중복 레코드는 보존하되
--- 고유한 보조 해시를 부여해 마이그레이션 중 데이터가 삭제되지 않게 합니다.
+-- 기존 중복 본문은 보존합니다. 가장 오래된 레코드 하나만 표준 해시를 사용하고
+-- 나머지 레코드는 고유한 보조 해시를 사용합니다.
 drop trigger if exists memories_set_derived_fields on public.memories;
 
 with ranked as (
@@ -67,12 +54,6 @@ alter table public.memories alter column content_hash set not null;
 
 create unique index if not exists memories_content_hash_uidx
   on public.memories (content_hash);
-
-create index if not exists memories_embedding_idx
-  on public.memories using hnsw (embedding vector_cosine_ops);
-
-create index if not exists memories_source_idx
-  on public.memories (source);
 
 create index if not exists memories_created_at_id_idx
   on public.memories (created_at desc, id desc);
@@ -166,7 +147,6 @@ create index if not exists audit_logs_memory_id_idx
 create index if not exists audit_logs_created_at_idx
   on public.audit_logs (created_at desc);
 
--- 벡터 유사도 검색 함수 (코사인). 만료된 기억은 검색하지 않습니다.
 create or replace function public.match_memories(
   query_embedding vector(1536),
   match_count int default 8,
@@ -200,8 +180,6 @@ as $$
   limit greatest(least(coalesce(match_count, 8), 100), 1);
 $$;
 
--- API 클라이언트가 테이블이나 RPC를 직접 호출하지 못하게 하고, 백엔드의
--- service role만 접근하도록 제한합니다. service role 키는 서버에서만 사용합니다.
 alter table public.memories enable row level security;
 alter table public.memories force row level security;
 alter table public.audit_logs enable row level security;

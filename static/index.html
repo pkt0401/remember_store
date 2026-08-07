@@ -29,10 +29,27 @@
   }
   header {
     padding: 28px 32px 18px;
-    display: flex; align-items: baseline; gap: 14px;
+    display: flex; align-items: center; gap: 14px;
   }
   header h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
   header p { color: var(--ink-soft); font-size: 13px; }
+  .session-info {
+    margin-left: auto; display: none; align-items: center; gap: 8px;
+    color: var(--ink-soft); font-size: 11.5px;
+  }
+  .session-info.show { display: flex; }
+  .session-user { font-weight: 650; color: var(--ink); }
+  .session-role {
+    padding: 2px 6px; border-radius: 4px; background: var(--slate-soft);
+    color: var(--slate); font-family: var(--mono); font-size: 10px; font-weight: 700;
+  }
+  .logout-button, .activity-button {
+    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
+    border-radius: 6px; padding: 5px 8px; font-size: 11px; cursor: pointer;
+  }
+  .activity-button:hover { border-color: var(--pine); color: var(--pine); }
+  .logout-button:hover { border-color: #D8B7B1; color: #8C3B2E; }
+  .role-hidden { display: none !important; }
   main {
     display: grid;
     grid-template-columns: minmax(340px, 460px) 1fr;
@@ -223,6 +240,10 @@
     padding: 11px; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer;
   }
   .login-err { color: #8C3B2E; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 
   /* ---- edit ---- */
   #editOverlay {
@@ -251,6 +272,37 @@
   .edit-actions .cancel { background: #fff; color: var(--ink-soft); }
   .edit-actions .confirm { background: var(--pine); border-color: var(--pine); color: #fff; }
 
+  /* ---- audit log ---- */
+  #auditOverlay {
+    display: none; position: fixed; inset: 0; z-index: 20;
+    background: rgba(23, 33, 29, .45); align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  #auditOverlay.show { display: flex; }
+  .audit-dialog {
+    width: min(920px, 100%); max-height: calc(100vh - 40px); overflow: hidden;
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    display: flex; flex-direction: column;
+  }
+  .dialog-close {
+    border: none; background: transparent; color: var(--ink-soft); cursor: pointer;
+    font-size: 20px; line-height: 1; padding: 2px 4px;
+  }
+  .dialog-close:hover { color: var(--ink); }
+  .audit-table-wrap { overflow: auto; }
+  .audit-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .audit-table th, .audit-table td {
+    padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left;
+    vertical-align: top;
+  }
+  .audit-table th {
+    position: sticky; top: 0; background: #F7F9F8; color: var(--ink-soft);
+    font-size: 11px; font-weight: 700;
+  }
+  .audit-table td:nth-child(1), .audit-table td:nth-child(2), .audit-table td:nth-child(3) { white-space: nowrap; }
+  .audit-table code { font: 10.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .audit-status { padding: 24px 18px; color: var(--ink-soft); font-size: 13px; text-align: center; }
+
   /* ---- chat ---- */
   #chat {
     display: flex; flex-direction: column;
@@ -274,7 +326,7 @@
     animation: blink .8s step-end infinite;
   }
   .msg.bot .srcs { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); display: flex; flex-wrap: wrap; gap: 6px; }
-  .srcs .chip { cursor: pointer; }
+  .srcs .chip { cursor: pointer; border: none; }
   .raw {
     display: none; margin-top: 8px; padding: 10px 12px;
     background: #fff; border: 1px solid var(--line); border-radius: 8px;
@@ -299,7 +351,9 @@
 
   @media (max-width: 900px) {
     main { grid-template-columns: 1fr; padding: 0 16px 24px; }
-    header { padding: 20px 16px 14px; }
+    header { padding: 20px 16px 14px; flex-wrap: wrap; }
+    header p { order: 3; width: 100%; }
+    .session-info { margin-left: auto; }
     #chat { height: auto; min-height: 420px; }
   }
   @media (prefers-reduced-motion: no-preference) {
@@ -311,27 +365,36 @@
 </head>
 <body>
 
-<div id="loginOverlay">
-  <div class="login-card">
-    <h2>기억 서랍</h2>
-    <p>비밀번호를 입력하면 열려요</p>
-    <input type="password" id="pwBox" placeholder="비밀번호" onkeydown="if(event.key==='Enter')doLogin()">
-    <button onclick="doLogin()">열기</button>
-    <div class="login-err" id="loginErr"></div>
-  </div>
+<div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <form class="login-card" id="loginForm">
+    <h2 id="loginTitle">기억 서랍</h2>
+    <p>계정으로 로그인하면 열려요</p>
+    <label class="sr-only" for="usernameBox">아이디 또는 이메일</label>
+    <input type="text" id="usernameBox" name="username" placeholder="아이디 또는 이메일" autocomplete="username" required>
+    <label class="sr-only" for="pwBox">비밀번호</label>
+    <input type="password" id="pwBox" name="password" placeholder="비밀번호" autocomplete="current-password" required>
+    <button type="submit" id="loginBtn">열기</button>
+    <div class="login-err" id="loginErr" role="alert" aria-live="polite"></div>
+  </form>
 </div>
 
 <header>
   <h1>기억 서랍</h1>
   <p>Slack·메일·메모를 붙여넣어 저장하고, 나중에 물어보세요</p>
+  <div class="session-info" id="sessionInfo" aria-label="현재 로그인 정보">
+    <span class="session-user" id="sessionUser"></span>
+    <span class="session-role" id="sessionRole"></span>
+    <button type="button" class="activity-button role-hidden" id="auditLogBtn">활동 로그</button>
+    <button type="button" class="logout-button" id="logoutBtn">로그아웃</button>
+  </div>
 </header>
 
 <main>
   <section>
-    <div class="panel">
+    <div class="panel role-hidden" id="ingestPanel">
       <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
       <textarea id="pasteBox" placeholder="Slack 스레드, 메일 본문, 또는 그냥 메모를 여기에 붙여넣기&#10;&#10;예)&#10;김철수  오후 2:31&#10;다음주 배포는 수요일로 확정입니다&#10;박영희  오후 2:33&#10;스테이징 검증은 화요일까지 완료할게요"></textarea>
-      <div id="saveResult"></div>
+      <div id="saveResult" role="status" aria-live="polite"></div>
       <div class="ingest-foot">
         <span class="hint">Ctrl/⌘ + Enter로 저장</span>
         <button class="save" id="saveBtn" onclick="ingest()">저장하기</button>
@@ -372,7 +435,7 @@
 
   <section class="panel" id="chat">
     <div class="panel-head"><b>묻기</b><div class="chat-head-actions"><span>저장된 내용에서만 답해요</span><button class="chat-clear" onclick="clearChat()">대화 지우기</button></div></div>
-    <div id="log">
+    <div id="log" aria-live="polite">
       <div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>
     </div>
     <div class="ask-bar">
@@ -400,18 +463,73 @@
   </div>
 </div>
 
+<div id="auditOverlay">
+  <div class="audit-dialog" role="dialog" aria-modal="true" aria-labelledby="auditTitle">
+    <div class="panel-head">
+      <b id="auditTitle">활동 로그</b>
+      <button type="button" class="dialog-close" id="auditCloseBtn" aria-label="활동 로그 닫기">×</button>
+    </div>
+    <div class="audit-table-wrap">
+      <table class="audit-table">
+        <thead><tr><th>사용자</th><th>작업</th><th>일시</th><th>상세</th></tr></thead>
+        <tbody id="auditRows"></tbody>
+      </table>
+      <div class="audit-status" id="auditStatus" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const chipName = { slack: "SLACK", email: "MAIL", note: "MEMO" };
+const allowedRoles = new Set(["admin", "editor", "viewer"]);
+let currentSession = null;
+
+async function apiFetch(input, init) {
+  const response = await fetch(input, init);
+  if (response.status === 401) {
+    showLogin();
+    throw new Error("로그인 세션이 만료되었습니다. 다시 로그인하세요.");
+  }
+  return response;
+}
+
+function sourceKey(value) {
+  const key = String(value || "").toLowerCase();
+  return Object.hasOwn(chipName, key) ? key : "note";
+}
+
+function sourceLabel(value) {
+  return chipName[sourceKey(value)];
+}
+
+function canWrite() {
+  return currentSession && ["admin", "editor"].includes(currentSession.role);
+}
+
+function isAdmin() {
+  return currentSession && currentSession.role === "admin";
+}
+
+function showSaveResult(message, isError = false) {
+  const result = $("saveResult");
+  result.replaceChildren();
+  if (!message) return;
+  const notice = document.createElement("div");
+  notice.className = `save-ok${isError ? " save-err" : ""}`;
+  notice.textContent = message;
+  result.appendChild(notice);
+}
 
 async function ingest() {
+  if (!canWrite()) return;
   const text = $("pasteBox").value.trim();
   if (!text) return;
   const btn = $("saveBtn");
   btn.disabled = true; btn.textContent = "저장 중…";
-  $("saveResult").innerHTML = "";
+  showSaveResult("");
   try {
-    const r = await fetch("/api/ingest", {
+    const r = await apiFetch("/api/ingest", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text })
     });
@@ -420,13 +538,14 @@ async function ingest() {
       ? await r.json()
       : { detail: await r.text() || `서버 오류 (${r.status})` };
     if (!r.ok) throw new Error(d.detail || "저장 실패");
-    $("saveResult").innerHTML =
-      `<div class="save-ok">${chipName[d.source] || d.source}로 인식 — ${d.saved}개 조각으로 저장했어요${d.replaced ? ` (기존 ${d.replaced}건 갱신)` : ""}</div>`;
+    showSaveResult(
+      `${sourceLabel(d.source)}로 인식 · ${Number(d.saved) || 0}개 조각으로 저장했어요${d.replaced ? ` (기존 ${Number(d.replaced) || 0}건 갱신)` : ""}`
+    );
     $("pasteBox").value = "";
     filtersLoaded = false;
     loadRecent();
   } catch (e) {
-    $("saveResult").innerHTML = `<div class="save-ok save-err">저장 실패: ${e.message}</div>`;
+    showSaveResult(`저장 실패: ${e.message}`, true);
   } finally {
     btn.disabled = false; btn.textContent = "저장하기";
   }
@@ -448,7 +567,7 @@ function optionHtml(value) {
 }
 
 async function loadFilters() {
-  const r = await fetch("/api/memory-filters");
+  const r = await apiFetch("/api/memory-filters");
   if (!r.ok) return;
   const data = await r.json();
   $("personFilter").innerHTML = `<option value="">담당자 전체</option>${data.people.map(optionHtml).join("")}`;
@@ -498,19 +617,27 @@ function accessDetails(m, meta) {
   </div>`;
 }
 
-async function loadRecent() {
+async function loadRecentUnsafe() {
   if (!filtersLoaded) await loadFilters();
   const [r, tr] = await Promise.all([
-    fetch(`/api/memories?${memoryParams()}`),
-    fetch("/api/tags"),
+    apiFetch(`/api/memories?${memoryParams()}`),
+    apiFetch("/api/tags"),
   ]);
+  if (!r.ok || !tr.ok) throw new Error("저장된 기억을 불러오지 못했습니다.");
   const items = await r.json();
   const tags = await tr.json();
   memoryById = new Map(items.map(item => [item.id, item]));
 
-  $("tagBar").innerHTML = tags.slice(0, 12).map(t =>
-    `<span class="tag${t.tag === activeTag ? " on" : ""}" onclick="filterTag('${escapeHtml(t.tag)}')">${escapeHtml(t.tag)} ${t.count}</span>`
+  const visibleTags = tags.slice(0, 12);
+  $("tagBar").innerHTML = visibleTags.map((t, index) =>
+    `<button type="button" class="tag${t.tag === activeTag ? " on" : ""}" data-tag-index="${index}" aria-pressed="${t.tag === activeTag}">${escapeHtml(t.tag)} ${escapeHtml(t.count)}</button>`
   ).join("");
+  $("tagBar").querySelectorAll("[data-tag-index]").forEach(button => {
+    button.addEventListener("click", () => {
+      const tag = visibleTags[Number(button.dataset.tagIndex)];
+      if (tag) filterTag(tag.tag);
+    });
+  });
 
   const shown = activeTag
     ? items.filter(m => ((m.metadata || {}).tags || []).includes(activeTag))
@@ -544,15 +671,48 @@ async function loadRecent() {
     const isAccess = ["credential", "system"].includes(meta.record_type);
     const body = isAccess ? accessDetails(m, meta) : `<div class="txt">${escapeHtml(m.content.slice(0, 90))}${m.content.length > 90 ? "…" : ""}
         <small>${escapeHtml(who)}${project}${who || project ? " · " : ""}${savedDate} 저장${statusHtml}${badge}${tagHtml}</small></div>`;
+    const memoryId = escapeHtml(m.id);
+    const actions = [
+      canWrite() ? `<button type="button" class="edit" title="수정" aria-label="기억 수정" data-memory-action="edit" data-memory-id="${memoryId}">✎</button>` : "",
+      isAdmin() ? `<button type="button" title="삭제" aria-label="기억 삭제" data-memory-action="delete" data-memory-id="${memoryId}">×</button>` : "",
+    ].filter(Boolean).join("");
+    const source = sourceKey(m.source);
     return `${dateHeader}<div class="mem${isExpired ? " expired" : ""}">
-      <span class="chip ${m.source}">${chipName[m.source] || m.source}</span>
+      <span class="chip ${source}">${escapeHtml(sourceLabel(source))}</span>
       ${body}
-      <div class="mem-actions"><button class="edit" title="수정" onclick="openEdit('${m.id}')">✎</button><button title="삭제" onclick="del('${m.id}')">×</button></div>
+      ${actions ? `<div class="mem-actions">${actions}</div>` : ""}
     </div>`;
   }).join("") : `<div class="mem"><div class="txt" style="color:var(--ink-soft)">${activeTag ? "이 태그의 기억이 없어요." : "저장된 기억이 아직 없어요."}</div></div>`;
-  $("cleanBtn").style.display = expiredCount ? "" : "none";
+  $("cleanBtn").style.display = isAdmin() && expiredCount ? "" : "none";
   $("cleanBtn").textContent = `만료 정리 (${expiredCount})`;
   $("moreWrap").style.display = shown.length > visibleLimit ? "" : "none";
+}
+
+$("memList").addEventListener("click", event => {
+  const button = event.target.closest("[data-memory-action]");
+  if (!button || !$("memList").contains(button)) return;
+  const id = button.dataset.memoryId;
+  if (button.dataset.memoryAction === "edit" && canWrite()) openEdit(id);
+  if (button.dataset.memoryAction === "delete" && isAdmin()) del(id);
+});
+
+async function loadRecent() {
+  try {
+    await loadRecentUnsafe();
+  } catch (error) {
+    if (!currentSession) return;
+    memoryById.clear();
+    $('memCount').textContent = '';
+    $('tagBar').replaceChildren();
+    const row = document.createElement('div');
+    row.className = 'mem';
+    const message = document.createElement('div');
+    message.className = 'txt';
+    message.style.color = 'var(--ink-soft)';
+    message.textContent = error.message || '저장된 기억을 불러오지 못했습니다.';
+    row.appendChild(message);
+    $('memList').replaceChildren(row);
+  }
 }
 
 function filterTag(tag) {
@@ -593,20 +753,36 @@ function resetFilters() {
 );
 
 async function cleanExpired() {
-  if (!confirm("만료된 기억을 모두 삭제할까요?")) return;
-  const r = await fetch("/api/memories/expired", { method: "DELETE" });
-  const d = await r.json();
-  alert(`${d.deleted}건 삭제했어요.`);
-  loadRecent();
+  try {
+    if (!isAdmin()) return;
+    if (!confirm("만료된 기억을 모두 삭제할까요?")) return;
+    const r = await apiFetch("/api/memories/expired", { method: "DELETE" });
+    const d = await r.json();
+    if (!r.ok) return alert(d.detail || "만료 기억 정리에 실패했습니다.");
+    alert(`${d.deleted}건 삭제했어요.`);
+    loadRecent();
+  } catch (error) {
+    if (currentSession) alert(error.message || "만료 기억 정리에 실패했습니다.");
+  }
 }
 
 async function del(id) {
-  if (!confirm("이 기억을 삭제할까요?")) return;
-  await fetch(`/api/memories/${id}`, { method: "DELETE" });
-  loadRecent();
+  try {
+    if (!isAdmin()) return;
+    if (!confirm("이 기억을 삭제할까요?")) return;
+    const response = await apiFetch(`/api/memories/${id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await response.json();
+      return alert(data.detail || "기억 삭제에 실패했습니다.");
+    }
+    loadRecent();
+  } catch (error) {
+    if (currentSession) alert(error.message || "기억 삭제에 실패했습니다.");
+  }
 }
 
 function openEdit(id) {
+  if (!canWrite()) return;
   const memory = memoryById.get(id);
   if (!memory) return;
   const meta = memory.metadata || {};
@@ -630,14 +806,14 @@ function closeEdit() {
 }
 
 async function saveEdit() {
-  if (!editingMemoryId) return;
+  if (!editingMemoryId || !canWrite()) return;
   const content = $("editContent").value.trim();
   if (!content) return alert("본문을 입력하세요.");
   const button = $("editSaveBtn");
   button.disabled = true;
   button.textContent = "저장 중…";
   try {
-    const response = await fetch(`/api/memories/${editingMemoryId}`, {
+    const response = await apiFetch(`/api/memories/${editingMemoryId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -660,15 +836,84 @@ async function saveEdit() {
     filtersLoaded = false;
     await loadRecent();
   } catch (error) {
-    alert(`수정 실패: ${error.message}`);
+    if (currentSession) alert(`수정 실패: ${error.message}`);
   } finally {
     button.disabled = false;
     button.textContent = "저장";
   }
 }
 
+function auditValue(value, fallback = "-") {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function appendAuditCell(row, value, asCode = false) {
+  const cell = document.createElement("td");
+  const content = asCode ? document.createElement("code") : document.createElement("span");
+  content.textContent = auditValue(value);
+  cell.appendChild(content);
+  row.appendChild(cell);
+}
+
+async function openAuditLog() {
+  if (!isAdmin()) return;
+  const overlay = $("auditOverlay");
+  const rows = $("auditRows");
+  const status = $("auditStatus");
+  rows.replaceChildren();
+  status.textContent = "활동 로그를 불러오는 중입니다.";
+  overlay.classList.add("show");
+  $("auditCloseBtn").focus();
+
+  try {
+    const response = await apiFetch("/api/audit-logs?limit=100");
+    if (!response.ok) {
+      const raw = await response.text();
+      let detail = `활동 로그를 불러오지 못했습니다. (${response.status})`;
+      try { detail = JSON.parse(raw).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const entries = await response.json();
+    if (!Array.isArray(entries) || !entries.length) {
+      status.textContent = "기록된 활동이 없습니다.";
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    entries.forEach(entry => {
+      const row = document.createElement("tr");
+      appendAuditCell(row, entry && entry.actor);
+      appendAuditCell(row, entry && entry.action);
+      const rawDate = entry && entry.created_at;
+      const parsedDate = rawDate ? new Date(rawDate) : null;
+      const displayedDate = parsedDate && !Number.isNaN(parsedDate.getTime())
+        ? parsedDate.toLocaleString("ko-KR") : rawDate;
+      appendAuditCell(row, displayedDate);
+      appendAuditCell(row, entry && entry.details, true);
+      fragment.appendChild(row);
+    });
+    rows.appendChild(fragment);
+    status.textContent = "";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+function closeAuditLog() {
+  const wasOpen = $("auditOverlay").classList.contains("show");
+  $("auditOverlay").classList.remove("show");
+  if (wasOpen && isAdmin()) $("auditLogBtn").focus();
+}
+
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && $("editOverlay").classList.contains("show")) closeEdit();
+  if (event.key === "Escape" && $("auditOverlay").classList.contains("show")) closeAuditLog();
 });
 
 function addMsg(cls, html) {
@@ -683,6 +928,7 @@ function addMsg(cls, html) {
 }
 
 const CHAT_STORAGE_KEY = "memory-agent-chat-v1";
+const CHAT_OWNER_KEY = 'memory-agent-chat-owner-v1';
 let chatHistory = loadChatHistory();
 let chatRendered = false;
 
@@ -701,12 +947,15 @@ function saveChatHistory() {
 
 function botMessageHtml(answer, sources = []) {
   let html = `<div class="answer">${renderAnswerMarkdown(answer)}</div>`;
-  if (sources.length) {
-    html += `<div class="srcs">` + sources.map((s, i) =>
-      `<span class="chip ${s.source}" onclick="toggleRaw(this, ${i})">${chipName[s.source] || s.source} · 원문</span>`
+  const safeSources = Array.isArray(sources) ? sources : [];
+  if (safeSources.length) {
+    html += `<div class="srcs">` + safeSources.map((s, i) => {
+      const source = sourceKey(s && s.source);
+      return `<button type="button" class="chip ${source}" data-source-index="${i}" aria-expanded="false">${escapeHtml(sourceLabel(source))} · 원문</button>`;
+    }
     ).join("") + `</div>`;
-    html += sources.map((s, i) =>
-      `<div class="raw" data-raw="${i}"><b>원문 그대로 (${chipName[s.source] || s.source})</b>${escapeHtml(s.content)}</div>`
+    html += safeSources.map((s, i) =>
+      `<div class="raw" data-raw="${i}"><b>원문 그대로 (${escapeHtml(sourceLabel(s && s.source))})</b>${escapeHtml(s && s.content || "")}</div>`
     ).join("");
   }
   return html;
@@ -761,6 +1010,13 @@ function renderChatHistory() {
   });
 }
 
+function resetChatView() {
+  const empty = document.createElement('div');
+  empty.className = 'empty';
+  empty.textContent = '아직 대화가 없어요. 저장한 내용에 대해 무엇이든 물어보세요.';
+  $('log').replaceChildren(empty);
+}
+
 function clearChat() {
   if (!chatHistory.length || confirm("대화 이력을 모두 지울까요?")) {
     chatHistory = [];
@@ -797,6 +1053,7 @@ async function ask() {
   if (!q || isAsking) return;
 
   isAsking = true;
+  $("log").setAttribute("aria-busy", "true");
   input.value = "";
   input.disabled = true;
   button.disabled = true;
@@ -810,7 +1067,7 @@ async function ask() {
   let completed = false;
 
   try {
-    const response = await fetch("/api/ask/stream", {
+    const response = await apiFetch("/api/ask/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: q, history: chatHistory }),
@@ -847,18 +1104,28 @@ async function ask() {
     bot.innerHTML = `<div class="answer">${partial}</div>`;
   } finally {
     isAsking = false;
+    $("log").setAttribute("aria-busy", "false");
     input.disabled = false;
     button.disabled = false;
     button.textContent = "질문";
-    input.focus();
+    if (currentSession) input.focus();
   }
 }
 
 function toggleRaw(chip, i) {
   const msg = chip.closest(".msg");
   const raw = msg.querySelector(`[data-raw="${i}"]`);
-  if (raw) raw.classList.toggle("open");
+  if (raw) {
+    const isOpen = raw.classList.toggle("open");
+    chip.setAttribute("aria-expanded", String(isOpen));
+  }
 }
+
+$("log").addEventListener("click", event => {
+  const chip = event.target.closest("[data-source-index]");
+  if (!chip || !$("log").contains(chip)) return;
+  toggleRaw(chip, Number(chip.dataset.sourceIndex));
+});
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
@@ -866,30 +1133,138 @@ function escapeHtml(s) {
 }
 
 async function doLogin() {
+  const username = $("usernameBox").value.trim();
   const pw = $("pwBox").value;
-  if (!pw) return;
-  const r = await fetch("/api/login", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password: pw })
-  });
-  if (r.ok) {
+  if (!username || !pw) return;
+  const button = $("loginBtn");
+  button.disabled = true;
+  button.textContent = "확인 중";
+  $("loginErr").textContent = "";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password: pw })
+    });
+    if (!r.ok) {
+      const raw = await r.text();
+      let detail = "사용자명 또는 비밀번호가 맞지 않아요.";
+      try { detail = JSON.parse(raw).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
     $("loginOverlay").classList.remove("show");
-    loadRecent();
-    renderChatHistory();
-  } else {
-    $("loginErr").textContent = "비밀번호가 맞지 않아요.";
     $("pwBox").value = "";
+    await loadRecent();
+    renderChatHistory();
+  } catch (error) {
+    $("loginErr").textContent = error.message;
+    $("pwBox").value = "";
+    $("pwBox").focus();
+  } finally {
+    button.disabled = false;
+    button.textContent = "열기";
   }
 }
 
+function applySession(data) {
+  const user = data && data.user || {};
+  const role = allowedRoles.has(user.role) ? user.role : "viewer";
+  currentSession = { username: String(user.username || "사용자"), role };
+  const chatOwner = localStorage.getItem(CHAT_OWNER_KEY);
+  if (chatOwner !== currentSession.username) {
+    localStorage.removeItem(CHAT_STORAGE_KEY);
+    chatHistory = [];
+    chatRendered = false;
+    resetChatView();
+  }
+  localStorage.setItem(CHAT_OWNER_KEY, currentSession.username);
+  const roleNames = { admin: "관리자", editor: "편집자", viewer: "조회자" };
+  $("sessionUser").textContent = currentSession.username;
+  $("sessionRole").textContent = roleNames[role];
+  $("sessionRole").title = `권한: ${roleNames[role]}`;
+  $("sessionInfo").classList.add("show");
+  $("loginOverlay").classList.remove("show");
+  $("ingestPanel").classList.toggle("role-hidden", !canWrite());
+  $("editSaveBtn").classList.toggle("role-hidden", !canWrite());
+  $("auditLogBtn").classList.toggle("role-hidden", !isAdmin());
+  if (!canWrite()) closeEdit();
+  if (!isAdmin()) closeAuditLog();
+}
+
+function showLogin() {
+  currentSession = null;
+  chatHistory = [];
+  chatRendered = false;
+  localStorage.removeItem(CHAT_STORAGE_KEY);
+  localStorage.removeItem(CHAT_OWNER_KEY);
+  resetChatView();
+  filtersLoaded = false;
+  memoryById.clear();
+  $('memList').replaceChildren();
+  $('tagBar').replaceChildren();
+  $('memCount').textContent = '';
+  $('pasteBox').value = '';
+  $('askBox').value = '';
+  showSaveResult('');
+  closeEdit();
+  closeAuditLog();
+  $('editSaveBtn').classList.add('role-hidden');
+  $("sessionInfo").classList.remove("show");
+  $("auditLogBtn").classList.add("role-hidden");
+  $("ingestPanel").classList.add("role-hidden");
+  $("cleanBtn").style.display = "none";
+  $("loginOverlay").classList.add("show");
+  $("loginErr").textContent = "";
+  requestAnimationFrame(() => $("usernameBox").focus());
+}
+
+async function loadSession() {
+  try {
+    const response = await fetch("/api/session");
+    if (!response.ok) return false;
+    applySession(await response.json());
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function logout() {
+  $("logoutBtn").disabled = true;
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } finally {
+    chatHistory = [];
+    chatRendered = false;
+    localStorage.removeItem(CHAT_STORAGE_KEY);
+    memoryById.clear();
+    $("memList").replaceChildren();
+    $("tagBar").replaceChildren();
+    clearChat();
+    $("usernameBox").value = "";
+    $("pwBox").value = "";
+    $("logoutBtn").disabled = false;
+    showLogin();
+  }
+}
+
+$("loginForm").addEventListener("submit", event => {
+  event.preventDefault();
+  doLogin();
+});
+$("logoutBtn").addEventListener("click", logout);
+$("auditLogBtn").addEventListener("click", openAuditLog);
+$("auditCloseBtn").addEventListener("click", closeAuditLog);
+$("auditOverlay").addEventListener("click", event => {
+  if (event.target === $("auditOverlay")) closeAuditLog();
+});
+
 async function init() {
-  const r = await fetch("/api/memories?limit=20");
-  if (r.status === 401) {
-    $("loginOverlay").classList.add("show");
-    $("pwBox").focus();
+  if (!await loadSession()) {
+    showLogin();
     return;
   }
-  loadRecent();
+  await loadRecent();
   renderChatHistory();
 }
 
