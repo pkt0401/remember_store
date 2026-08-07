@@ -268,6 +268,11 @@
   .answer ul { margin: 2px 0 10px; padding-left: 19px; }
   .answer li { margin: 3px 0; }
   .answer strong { font-weight: 750; color: var(--ink); }
+  .answer.streaming::after {
+    content: ""; display: inline-block; width: 2px; height: 1em;
+    margin-left: 3px; vertical-align: -2px; background: var(--pine);
+    animation: blink .8s step-end infinite;
+  }
   .msg.bot .srcs { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); display: flex; flex-wrap: wrap; gap: 6px; }
   .srcs .chip { cursor: pointer; }
   .raw {
@@ -287,8 +292,9 @@
   .ask-bar input:focus { border-color: var(--pine); }
   .ask-bar button {
     background: var(--ink); color: #fff; border: none; border-radius: 9px;
-    padding: 0 20px; font-size: 14px; font-weight: 600; cursor: pointer;
+    min-width: 76px; padding: 0 20px; font-size: 14px; font-weight: 600; cursor: pointer;
   }
+  .ask-bar button:disabled { opacity: .55; cursor: wait; }
   .thinking { color: var(--ink-soft); font-size: 13px; align-self: flex-start; padding: 4px 2px; }
 
   @media (max-width: 900px) {
@@ -299,6 +305,7 @@
   @media (prefers-reduced-motion: no-preference) {
     .msg { animation: rise .18s ease-out; }
     @keyframes rise { from { transform: translateY(4px); opacity: 0; } }
+    @keyframes blink { 50% { opacity: 0; } }
   }
 </style>
 </head>
@@ -370,7 +377,7 @@
     </div>
     <div class="ask-bar">
       <input id="askBox" placeholder="예: 다음주 배포 일정이 언제였지?" onkeydown="if(event.key==='Enter')ask()">
-      <button onclick="ask()">질문</button>
+      <button id="askBtn" onclick="ask()">질문</button>
     </div>
   </section>
 </main>
@@ -762,31 +769,88 @@ function clearChat() {
   }
 }
 
+async function readNdjson(response, onEvent) {
+  if (!response.body) throw new Error("이 브라우저에서는 스트리밍을 사용할 수 없습니다.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim()) onEvent(JSON.parse(line));
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) onEvent(JSON.parse(buffer));
+}
+
+let isAsking = false;
+
 async function ask() {
-  const q = $("askBox").value.trim();
-  if (!q) return;
-  $("askBox").value = "";
+  const input = $("askBox");
+  const button = $("askBtn");
+  const q = input.value.trim();
+  if (!q || isAsking) return;
+
+  isAsking = true;
+  input.value = "";
+  input.disabled = true;
+  button.disabled = true;
+  button.textContent = "답변 중";
   addMsg("user", escapeHtml(q));
-  const t = document.createElement("div");
-  t.className = "thinking"; t.textContent = "기억을 뒤지는 중…";
-  $("log").appendChild(t); $("log").scrollTop = $("log").scrollHeight;
+
+  const bot = addMsg("bot", '<div class="answer streaming"><p>기억을 찾는 중…</p></div>');
+  const answerNode = bot.querySelector(".answer");
+  let answer = "";
+  let sources = [];
+  let completed = false;
+
   try {
-    const r = await fetch("/api/ask", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q, history: chatHistory })
+    const response = await fetch("/api/ask/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q, history: chatHistory }),
     });
-    const d = await r.json();
-    t.remove();
+    if (!response.ok) {
+      const raw = await response.text();
+      let detail = raw || `서버 오류 (${response.status})`;
+      try { detail = JSON.parse(raw).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+
+    await readNdjson(response, event => {
+      if (event.type === "meta") sources = event.sources || [];
+      if (event.type === "delta") {
+        answer += event.content || "";
+        answerNode.innerHTML = renderAnswerMarkdown(answer);
+        $("log").scrollTop = $("log").scrollHeight;
+      }
+      if (event.type === "error") throw new Error(event.detail || "스트리밍이 중단됐습니다.");
+      if (event.type === "done") completed = true;
+    });
+
+    if (!completed) throw new Error("답변 스트리밍이 완료되지 않았습니다.");
+    bot.innerHTML = botMessageHtml(answer, sources);
     chatHistory.push(
       { role: "user", content: q },
-      { role: "assistant", content: d.answer, sources: d.sources || [] },
+      { role: "assistant", content: answer, sources },
     );
     if (chatHistory.length > 12) chatHistory = chatHistory.slice(-12);
     saveChatHistory();
-    addMsg("bot", botMessageHtml(d.answer, d.sources || []));
-  } catch (e) {
-    t.remove();
-    addMsg("bot", "오류가 발생했어요: " + escapeHtml(e.message));
+  } catch (error) {
+    const partial = answer ? `${renderAnswerMarkdown(answer)}<p>응답 중단: ${escapeHtml(error.message)}</p>`
+      : `<p>오류가 발생했어요: ${escapeHtml(error.message)}</p>`;
+    bot.innerHTML = `<div class="answer">${partial}</div>`;
+  } finally {
+    isAsking = false;
+    input.disabled = false;
+    button.disabled = false;
+    button.textContent = "질문";
+    input.focus();
   }
 }
 

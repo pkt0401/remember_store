@@ -19,7 +19,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 from pydantic import BaseModel
@@ -354,7 +354,9 @@ ANSWER_SYSTEM = """당신은 사용자의 개인 메모리 저장소를 검색�
 
 규칙:
 - 검색 결과에 근거가 없으면 "저장된 정보에서 찾지 못했다"고 솔직하게 답할 것. 추측 금지.
-- 출처 표기, 대괄호, 메타데이터, 유사도 수치를 답변에 절대 포함하지 말 것. 자연스러운 문장으로만 답한다.
+- 출처 표기, 대괄호, 메타데이터, 유사도 수치를 답변에 절대 포함하지 말 것.
+- 서로 구분되는 사실이 2개 이상이면 줄글로 나열하지 말고, 각 사실을 `- ` 불릿과 줄바꿈으로 구분할 것.
+- 프로젝트, 상태, 주제가 달라지면 제목이나 굵은 상태명으로 섹션을 분리할 것.
 - "다음주", "내일" 같은 상대적 날짜는 오늘 날짜를 기준으로 계산해서 구체적 날짜로 답할 것.
 - 검색 결과끼리 내용이 충돌하면 저장 날짜가 최신인 쪽을 우선하되, 충돌 사실을 한 문장으로 알릴 것.
 - 한국어로 간결하게."""
@@ -491,8 +493,7 @@ def get_tags():
     )
 
 
-@app.post("/api/ask")
-def ask(req: AskRequest):
+def prepare_answer(req: AskRequest) -> dict:
     question = req.question.strip()
     if not question:
         raise HTTPException(400, "질문이 비어 있습니다.")
@@ -570,7 +571,8 @@ def ask(req: AskRequest):
 
     if not hits:
         return {
-            "answer": "저장된 정보에서 관련 내용을 찾지 못했어요. 먼저 관련 메시지를 붙여넣어 저장해 주세요.",
+            "fallback": "저장된 정보에서 관련 내용을 찾지 못했어요. 먼저 관련 메시지를 붙여넣어 저장해 주세요.",
+            "messages": None,
             "sources": [],
             "resolved_question": search_question if search_question != question else None,
         }
@@ -609,15 +611,9 @@ def ask(req: AskRequest):
         "content": f"<검색결과>\n{context}\n</검색결과>\n\n질문: {question}",
     })
 
-    resp = oai.chat.completions.create(
-        model=CHAT_MODEL,
-        max_tokens=1500,
-        messages=messages,
-    )
-    answer = resp.choices[0].message.content or ""
-
     return {
-        "answer": answer,
+        "fallback": None,
+        "messages": messages,
         "resolved_question": search_question if search_question != question else None,
         "sources": [
             {
@@ -631,6 +627,73 @@ def ask(req: AskRequest):
             for h in hits[:5]
         ],
     }
+
+
+@app.post("/api/ask")
+def ask(req: AskRequest):
+    prepared = prepare_answer(req)
+    answer = prepared["fallback"]
+    if answer is None:
+        resp = oai.chat.completions.create(
+            model=CHAT_MODEL,
+            max_tokens=1500,
+            messages=prepared["messages"],
+        )
+        answer = resp.choices[0].message.content or ""
+
+    return {
+        "answer": answer,
+        "resolved_question": prepared["resolved_question"],
+        "sources": prepared["sources"],
+    }
+
+
+def stream_event(event_type: str, **payload: object) -> str:
+    return json.dumps({"type": event_type, **payload}, ensure_ascii=False) + "\n"
+
+
+@app.post("/api/ask/stream")
+def ask_stream(req: AskRequest):
+    prepared = prepare_answer(req)
+
+    def generate():
+        yield stream_event(
+            "meta",
+            resolved_question=prepared["resolved_question"],
+            sources=prepared["sources"],
+        )
+
+        if prepared["fallback"] is not None:
+            yield stream_event("delta", content=prepared["fallback"])
+            yield stream_event("done")
+            return
+
+        try:
+            stream = oai.chat.completions.create(
+                model=CHAT_MODEL,
+                max_tokens=1500,
+                messages=prepared["messages"],
+                stream=True,
+            )
+            for chunk in stream:
+                content = chunk.choices[0].delta.content or ""
+                if content:
+                    yield stream_event("delta", content=content)
+        except Exception:
+            logger.exception("Failed to stream answer")
+            yield stream_event("error", detail="AI 답변 생성 중 연결이 끊어졌습니다.")
+            return
+
+        yield stream_event("done")
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/memories")
