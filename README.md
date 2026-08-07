@@ -74,6 +74,8 @@ EMBED_MODEL=text-embedding-3-small
 SIM_THRESHOLD=0.25
 DUP_THRESHOLD=0.92
 TOP_K=8
+CATALOG_CACHE_TTL=30
+MAX_CONTEXT_CHARS=12000
 APP_PASSWORD=
 APP_SECRET=
 ```
@@ -173,6 +175,8 @@ echo 'export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt' >> .venv/bin/acti
 - `SIM_THRESHOLD`: 벡터 검색 최소 유사도. 높이면 누락이 늘고 오답이 줄어듭니다.
 - `DUP_THRESHOLD`: 기존 기억을 중복으로 판단해 교체하는 유사도입니다.
 - `TOP_K`: 답변 생성에 사용할 최대 검색 결과 수입니다.
+- `CATALOG_CACHE_TTL`: 키워드·태그 검색용 메모리 카탈로그 캐시 시간(초)입니다.
+- `MAX_CONTEXT_CHARS`: 답변 모델에 전달할 검색 원문의 최대 문자 수입니다.
 - `PARSER_SYSTEM`: 저장 시 구조화 규칙입니다.
 - `ANSWER_SYSTEM`: 저장된 정보로 답변하는 규칙입니다.
 

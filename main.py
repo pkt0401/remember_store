@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -37,11 +38,16 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")  # 1536 dims
 SIM_THRESHOLD = float(os.getenv("SIM_THRESHOLD", "0.25"))  # 이보다 낮으면 "없음" 처리
 DUP_THRESHOLD = float(os.getenv("DUP_THRESHOLD", "0.92"))  # 이 이상 유사하면 기존 기억을 교체
 TOP_K = int(os.getenv("TOP_K", "8"))
+CATALOG_CACHE_TTL = int(os.getenv("CATALOG_CACHE_TTL", "30"))
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 oai = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(title="Memory Agent")
+
+_catalog_cache: list[dict] = []
+_catalog_cache_time = 0.0
 
 
 # ---------- auth ----------
@@ -120,6 +126,57 @@ class AskRequest(BaseModel):
 def embed(texts: list[str]) -> list[list[float]]:
     resp = oai.embeddings.create(model=EMBED_MODEL, input=texts)
     return [d.embedding for d in resp.data]
+
+
+def invalidate_catalog_cache() -> None:
+    global _catalog_cache_time
+    _catalog_cache_time = 0.0
+
+
+def memory_catalog() -> list[dict]:
+    global _catalog_cache, _catalog_cache_time
+    now = time.monotonic()
+    if _catalog_cache_time and now - _catalog_cache_time < CATALOG_CACHE_TTL:
+        return _catalog_cache
+    rows = sb.table("memories").select(
+        "id,source,content,metadata,created_at,expires_at"
+    ).limit(500).execute().data or []
+    _catalog_cache = rows
+    _catalog_cache_time = now
+    return rows
+
+
+SEARCH_STOPWORDS = {
+    "알려줘", "알려", "무엇", "뭐야", "뭐지", "주소는", "주소", "정보", "관련",
+    "현재", "저장", "내용", "대한", "있는", "해줘", "보여줘", "please",
+}
+
+
+def lexical_memory_hits(question: str, rows: list[dict]) -> list[dict]:
+    terms = {
+        token.lower() for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]+|[가-힣]{2,}", question)
+        if token.lower() not in SEARCH_STOPWORDS
+    }
+    if not terms:
+        return []
+
+    scored = []
+    for row in rows:
+        meta = row.get("metadata") or {}
+        searchable = " ".join([
+            row.get("content") or "",
+            str(meta.get("person") or ""),
+            str(meta.get("project") or ""),
+            " ".join(meta.get("tags") or []),
+        ]).lower()
+        matched = sum(term in searchable for term in terms)
+        if matched >= 2 or (matched == 1 and len(terms) == 1):
+            hit = dict(row)
+            hit["similarity"] = min(0.99, 0.82 + 0.05 * matched)
+            hit["_lexical_score"] = matched
+            scored.append(hit)
+    scored.sort(key=lambda hit: (-hit["_lexical_score"], -hit["similarity"]))
+    return scored[:TOP_K]
 
 
 VALID_STATUSES = {"할 일", "진행 중", "완료", "보류", "참고"}
@@ -390,6 +447,7 @@ def ingest(req: IngestRequest):
             })
 
         sb.table("memories").insert(rows).execute()
+        invalidate_catalog_cache()
     except Exception:
         logger.exception("Failed to write memories to Supabase")
         raise HTTPException(502, "기억 저장소 연결 또는 저장에 실패했습니다. 서버 로그를 확인하세요.")
@@ -404,9 +462,8 @@ def ingest(req: IngestRequest):
 
 
 def all_tags() -> dict[str, int]:
-    res = sb.table("memories").select("metadata").execute()
     counts: dict[str, int] = {}
-    for row in res.data or []:
+    for row in memory_catalog():
         for t in (row.get("metadata") or {}).get("tags") or []:
             counts[t] = counts.get(t, 0) + 1
     return counts
@@ -435,33 +492,33 @@ def ask(req: AskRequest):
     }).execute()
     hits = res.data or []
     hits = [h for h in hits if h["similarity"] >= SIM_THRESHOLD]
+    catalog = memory_catalog()
+
+    lexical_hits = lexical_memory_hits(search_question, catalog)
+    lexical_ids = {hit["id"] for hit in lexical_hits}
+    hits = lexical_hits + [hit for hit in hits if hit["id"] not in lexical_ids]
 
     # 사람 이름처럼 짧고 고유한 검색어는 임베딩 유사도가 낮을 수 있으므로
     # 본문 정확 일치 결과를 벡터 검색보다 우선해서 합친다.
     names = set(re.findall(r"([가-힣]{2,4})\s*(?:매니저|님)", search_question))
     exact_hits = []
     for name in names:
-        result = (
-            sb.table("memories")
-            .select("id,source,content,metadata,created_at")
-            .ilike("content", f"%{name}%")
-            .limit(TOP_K)
-            .execute()
-        )
-        for row in result.data or []:
-            row["similarity"] = 1.0
-            exact_hits.append(row)
+        for catalog_row in catalog:
+            meta = catalog_row.get("metadata") or {}
+            if name in (catalog_row.get("content") or "") or name == meta.get("person"):
+                row = dict(catalog_row)
+                row["similarity"] = 1.0
+                exact_hits.append(row)
 
     seen_ids = {h["id"] for h in exact_hits}
     hits = exact_hits + [h for h in hits if h["id"] not in seen_ids]
+    seen_ids = {h["id"] for h in hits}
 
     date_range = question_date_range(search_question)
     if date_range:
         start, end = (value.isoformat() for value in date_range)
-        dated = sb.table("memories").select(
-            "id,source,content,metadata,created_at"
-        ).limit(200).execute().data or []
-        for row in dated:
+        for catalog_row in catalog:
+            row = dict(catalog_row)
             meta = row.get("metadata") or {}
             work_date = iso_date(meta.get("work_date")) or row["created_at"][:10]
             if start <= work_date <= end and row["id"] not in seen_ids:
@@ -495,9 +552,17 @@ def ask(req: AskRequest):
         parts.append(f"저장일 {h['created_at'][:10]}")
         return " · ".join(parts)
 
-    context = "\n\n".join(
-        f"--- 출처: {describe(h)} ---\n{h['content']}" for h in hits
-    )
+    context_parts = []
+    remaining_chars = MAX_CONTEXT_CHARS
+    for hit in hits:
+        header = f"--- 출처: {describe(hit)} ---\n"
+        allowance = min(2500, remaining_chars - len(header))
+        if allowance <= 0:
+            break
+        content = hit["content"][:allowance]
+        context_parts.append(header + content)
+        remaining_chars -= len(header) + len(content)
+    context = "\n\n".join(context_parts)
     today = date.today().strftime("%Y-%m-%d (%A)")
 
     messages = [{"role": "system", "content": ANSWER_SYSTEM + f"\n\n오늘 날짜: {today}"}]
@@ -607,6 +672,7 @@ def memory_filters():
 def delete_expired():
     now = datetime.now(timezone.utc).isoformat()
     res = sb.table("memories").delete().lt("expires_at", now).execute()
+    invalidate_catalog_cache()
     return {"deleted": len(res.data or [])}
 
 
@@ -651,6 +717,7 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest):
             .eq("id", memory_id)
             .execute()
         )
+        invalidate_catalog_cache()
     except Exception:
         logger.exception("Failed to update memory")
         raise HTTPException(502, "기억 수정에 실패했습니다. 서버 로그를 확인하세요.")
@@ -661,6 +728,7 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest):
 @app.delete("/api/memories/{memory_id}")
 def delete_memory(memory_id: str):
     sb.table("memories").delete().eq("id", memory_id).execute()
+    invalidate_catalog_cache()
     return {"deleted": memory_id}
 
 
