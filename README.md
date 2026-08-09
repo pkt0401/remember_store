@@ -22,6 +22,8 @@ Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저
 - OpenAI 응답을 실시간으로 표시하는 스트리밍 채팅
 - 브라우저 `localStorage` 기반 대화 이력 복원 및 전체 삭제
 - 사용자별 `viewer`·`editor`·`admin` 권한, 만료 세션, 로그아웃, 감사 로그
+- 아이디·이메일 기반 로그인과 앱 내 이메일/비밀번호 회원가입
+- 일반 가입에서 예약된 `admin` 관리자 아이디와 안전한 초기 관리자 생성 도구
 - 모든 계정이 보는 공유 기억과 계정 UUID별 개인기억 분리
 - OpenAI API 키 형태의 입력 차단과 기존 키 포함 기억 격리
 
@@ -45,8 +47,9 @@ Redis는 필수 구성요소가 아닙니다. 현재는 Supabase가 영구 저�
 담당합니다. 다중 사용자 응답 캐시, 비동기 수집 작업 큐, 세션 저장이 필요해질 때
 Redis를 추가하는 것이 적절합니다.
 
-대화 이력은 현재 브라우저의 `localStorage`에 최근 12개 메시지를 저장합니다.
-따라서 새로고침에는 유지되지만 다른 브라우저나 기기와는 공유되지 않습니다.
+대화 이력은 현재 브라우저의 `localStorage`에 최근 12개 질문·답변만 저장합니다.
+검색 근거의 전체 원문은 저장하지 않습니다. 따라서 질문·답변은 새로고침에 유지되지만
+다른 브라우저나 기기와는 공유되지 않습니다.
 기기 간 동기화가 필요하면 Supabase 대화 테이블 또는 Redis 기반 서버 세션을 추가해야 합니다.
 
 ## 요구 사항
@@ -61,7 +64,8 @@ Redis를 추가하는 것이 적절합니다.
 Supabase SQL Editor에서 설치 상태에 맞는 SQL을 실행합니다.
 
 - 신규 프로젝트: `schema.sql`
-- 기존 프로젝트: `migration_security.sql` 실행 후 `migration_memory_scopes.sql`
+- 기존 프로젝트: `migration_security.sql`, `migration_memory_scopes.sql`,
+  `migration_auth_accounts.sql` 순서로 실행
 - `migration_expiry.sql`은 과거 설치용 유통기한 마이그레이션이며,
   `migration_security.sql`에 해당 변경이 포함되어 있습니다.
 
@@ -71,11 +75,30 @@ API 키 형태가 포함된 행은 일반 기억에서 제거합니다. 키 원�
 실행 후 앱을 재시작해 기존 메모리 캐시를 비웁니다. 격리된 키가 실제 사용 중인
 키였다면 OpenAI 대시보드에서 폐기하고 새 키로 교체하세요.
 
-Supabase Auth에서 이메일/비밀번호 로그인을 활성화하고 사용자를 생성합니다. Auth의
-불변 `user.id` UUID가 개인기억 소유권으로 사용됩니다. 신규 사용자는 기본 `editor`로
-동작하며, 읽기 전용 또는 관리자 계정은 Auth 사용자의 `app_metadata.app_role`을
-각각 `viewer` 또는 `admin`으로 설정합니다. 기존 `APP_USERS_JSON`의 계정과 비밀번호
-해시는 Supabase Auth로 자동 이전되지 않으므로 사용자를 새로 만들거나 초대해야 합니다.
+`migration_auth_accounts.sql`은 로그인 아이디를 Supabase Auth의 불변 `user.id` UUID와
+연결하는 비공개 `account_profiles` 테이블과 가입 트리거를 만듭니다. 기존 Auth 사용자도
+충돌하지 않는 아이디로 backfill합니다. 이메일은 아이디를 실제 Supabase 로그인 주소로
+변환할 때만 서버에서 사용하며, 다른 사용자에게 공개되지 않습니다.
+
+Supabase Auth에서 이메일/비밀번호 로그인을 활성화합니다. Confirm email이 켜져 있으면
+가입자는 확인 메일의 링크를 누른 뒤 로그인하고, 꺼져 있으면 가입 직후 자동 로그인됩니다.
+확인 메일을 사용할 때는 Supabase Auth의 URL Configuration에서 Site URL을 실제 앱
+주소로 설정합니다.
+기존 `APP_USERS_JSON`의 계정과 비밀번호 해시는 자동 이전되지 않습니다.
+
+### 초기 관리자 만들기
+
+SQL 마이그레이션을 실행한 뒤 다음 명령으로 예약 아이디 `admin`을 생성합니다.
+
+```bash
+python scripts/bootstrap_admin.py --email admin@example.com
+```
+
+관리자 비밀번호는 터미널에서 두 번 숨김 입력하며 파일이나 환경변수에 저장하지 않습니다.
+같은 명령을 다시 실행하면 기존 `admin` 계정의 이메일·비밀번호·관리자 역할을 갱신합니다.
+입력한 이메일이 정확히 하나의 기존 Auth 계정에 속하면 그 UUID와 기억 소유권을 유지한
+채 `admin`으로 승격하며, 이메일이 모호하거나 다른 관리자와 충돌하면 변경 없이 중단합니다.
+일반 회원가입에서는 `admin` 아이디를 애플리케이션과 데이터베이스가 모두 거부합니다.
 
 ## 환경변수
 
@@ -111,6 +134,9 @@ COOKIE_SECURE=false
 
 모든 질문은 공유 기억과 현재 로그인 UUID의 개인기억을 함께 검색합니다. 다른 계정의
 개인기억은 목록, 필터, 태그, 벡터 검색 및 답변 원문에 포함되지 않습니다.
+
+브라우저에서 `/auth-architecture`를 열면 회원가입, JWT, UUID, RLS와 관리자 생성
+흐름을 기술 시각화로 확인할 수 있습니다.
 
 Windows에서 편집한 `.env`를 WSL에서 `source`할 경우 CRLF가 환경변수에 포함될 수
 있습니다. 다음 명령으로 줄바꿈을 정리할 수 있습니다.
@@ -168,6 +194,16 @@ echo 'export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt' >> .venv/bin/acti
 ```
 
 ## 사용법
+
+### 회원가입과 로그인
+
+로그인 화면의 `회원가입` 탭에서 아이디, 이메일, 비밀번호를 입력합니다. 아이디는
+영문 소문자 또는 숫자로 시작하는 3~32자의 영문 소문자·숫자·점·밑줄·하이픈을
+사용합니다. 로그인할 때는 아이디 또는 이메일을 사용할 수 있습니다.
+
+회원가입으로 만들어진 계정은 기본 `editor`이며, 권한은 사용자가 수정할 수 없는
+Supabase `app_metadata.app_role`로 판정합니다. 아이디는 편의를 위한 이름이고 기억
+소유권은 변경되지 않는 Auth UUID를 기준으로 합니다.
 
 ### 저장
 
@@ -237,8 +273,8 @@ fuser -k 8000/tcp
 ## 배포
 
 로컬과 운영 환경 모두 Supabase Auth 로그인이 필요합니다. 사용자 데이터 요청은
-publishable key와 요청별 사용자 JWT로 실행해 RLS를 적용하고, service key는 감사
-로그와 명시적인 관리자 작업에만 사용합니다.
+publishable key와 요청별 사용자 JWT로 실행해 RLS를 적용합니다. service key는 서버의
+아이디-이메일/UUID 매핑, 감사 로그와 명시적인 관리자 작업에만 사용합니다.
 
 Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연결하고 다음 값을
 환경변수로 등록합니다.

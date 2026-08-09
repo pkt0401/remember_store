@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<title>기억 서랍 · 인증과 기억 보호 구조</title>
+<style>
+  :root {
+    --paper: #f3f5f3;
+    --card: #ffffff;
+    --ink: #17211d;
+    --muted: #5d6965;
+    --line: #dbe2de;
+    --pine: #28664b;
+    --pine-soft: #e3efe8;
+    --blue: #3e5f78;
+    --blue-soft: #e6edf2;
+    --amber: #8a662a;
+    --amber-soft: #f5eddc;
+    --red: #8b4138;
+    --red-soft: #f6e7e4;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --shadow: 0 12px 38px rgba(23, 33, 29, .07);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; min-height: 100vh; color: var(--ink); background:
+      radial-gradient(circle at 8% 0%, rgba(40, 102, 75, .09), transparent 28rem),
+      var(--paper);
+    font-family: Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.55;
+  }
+  a { color: inherit; }
+  code { font-family: var(--mono); }
+  .shell { width: min(1180px, calc(100% - 36px)); margin: 0 auto; }
+  .hero { padding: 64px 0 38px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px; color: var(--pine);
+    font: 700 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+  }
+  .eyebrow::before { content: ""; width: 26px; height: 2px; background: var(--pine); }
+  h1 { max-width: 760px; margin: 15px 0 13px; font-size: clamp(32px, 5vw, 58px); line-height: 1.08; letter-spacing: -.045em; }
+  .lead { max-width: 750px; margin: 0; color: var(--muted); font-size: clamp(15px, 2vw, 18px); }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 23px; }
+  .hero-actions a {
+    padding: 9px 13px; border: 1px solid var(--line); border-radius: 8px;
+    background: rgba(255,255,255,.72); color: var(--muted); font-size: 12px;
+    font-weight: 650; text-decoration: none;
+  }
+  .hero-actions a:hover, .hero-actions a:focus-visible { border-color: var(--pine); color: var(--pine); outline: none; }
+  .hero-actions .back { background: var(--pine); border-color: var(--pine); color: #fff; }
+  section { margin-bottom: 28px; }
+  .section-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+  .section-no { color: var(--pine); font: 700 11px var(--mono); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+
+  .flow { padding: 22px; overflow: hidden; }
+  .flow-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; gap: 24px; }
+  .flow-step {
+    position: relative; min-height: 188px; padding: 16px; border: 1px solid var(--line);
+    border-radius: 12px; background: #fbfcfb;
+  }
+  .flow-step:not(:last-child)::after {
+    content: "→"; position: absolute; left: calc(100% + 7px); top: 50%; transform: translateY(-50%);
+    color: #91a09a; font: 700 20px var(--mono);
+  }
+  .step-tag { color: var(--pine); font: 700 10px var(--mono); letter-spacing: .06em; }
+  .flow-step h3 { margin: 7px 0 8px; font-size: 15px; }
+  .flow-step p { margin: 0; color: var(--muted); font-size: 12px; }
+  .flow-step code { display: inline-block; margin-top: 10px; color: var(--blue); font-size: 10.5px; overflow-wrap: anywhere; }
+  .result-bar {
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px;
+    margin-top: 18px; padding: 13px 16px; border-radius: 10px; background: var(--pine-soft); color: var(--pine);
+    font-size: 13px; font-weight: 650;
+  }
+  .result-bar .plus { font: 800 18px var(--mono); }
+  .result-bar span:last-child { text-align: right; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .subcard { padding: 21px; }
+  .subcard h3 { margin: 0 0 7px; font-size: 16px; }
+  .subcard > p { margin: 0 0 15px; color: var(--muted); font-size: 13px; }
+  .timeline { display: grid; gap: 9px; padding: 0; margin: 0; list-style: none; counter-reset: steps; }
+  .timeline li { position: relative; min-height: 42px; padding-left: 42px; color: var(--muted); font-size: 12.5px; }
+  .timeline li::before {
+    counter-increment: steps; content: counter(steps); position: absolute; left: 0; top: -1px;
+    display: grid; place-items: center; width: 27px; height: 27px; border-radius: 50%;
+    background: var(--blue-soft); color: var(--blue); font: 700 11px var(--mono);
+  }
+  .timeline li:not(:last-child)::after { content: ""; position: absolute; left: 13px; top: 28px; bottom: 0; border-left: 1px dashed #bdc9c4; }
+  .timeline strong { color: var(--ink); }
+  .callout {
+    margin-top: 14px; padding: 12px 13px; border-radius: 9px; background: var(--amber-soft);
+    color: var(--amber); font-size: 12px;
+  }
+  .command {
+    display: block; margin: 13px 0; padding: 12px 13px; border-radius: 9px;
+    background: #17211d; color: #e8f1ec; font: 11.5px/1.6 var(--mono); overflow-x: auto;
+  }
+
+  .jwt { display: grid; grid-template-columns: .8fr 1.2fr; overflow: hidden; }
+  .jwt-copy { padding: 24px; }
+  .jwt-copy h3 { margin: 0 0 8px; font-size: 17px; }
+  .jwt-copy p { margin: 0; color: var(--muted); font-size: 13px; }
+  .token { display: grid; grid-template-columns: .7fr 1.7fr 1fr; margin-top: 18px; overflow: hidden; border-radius: 9px; font: 700 11px var(--mono); }
+  .token span { padding: 10px 8px; text-align: center; }
+  .token .header { background: #e8e6f4; color: #584e82; }
+  .token .payload { background: var(--blue-soft); color: var(--blue); }
+  .token .signature { background: var(--pine-soft); color: var(--pine); }
+  .claim-box { padding: 23px; background: #18221e; color: #dfe9e4; }
+  .claim-box pre { margin: 0; white-space: pre-wrap; font: 12px/1.7 var(--mono); }
+  .claim-box .key { color: #8fc7aa; }
+  .claim-box .value { color: #efd59f; }
+
+  .rls-wrap { padding: 22px; }
+  .policy {
+    margin: 0; padding: 17px 18px; border-radius: 11px; background: #18221e;
+    color: #e8f0ec; font: 12.5px/1.75 var(--mono); overflow-x: auto;
+  }
+  .policy .sql-key { color: #8fc7aa; }
+  .policy .sql-value { color: #efd59f; }
+  .access-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px; margin-top: 14px; }
+  .access-card { padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+  .access-card h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 5px; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pine); }
+  .access-card.denied .dot { background: var(--red); }
+  .access-card p { margin: 0; color: var(--muted); font-size: 11.5px; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); font-size: 12.5px; }
+  th, td { padding: 13px 15px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { background: #f8faf9; color: var(--muted); font-size: 11px; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { font-weight: 750; white-space: nowrap; }
+  .yes { color: var(--pine); font-weight: 700; }
+  .no { color: var(--red); font-weight: 700; }
+
+  .schema { padding: 22px; }
+  .schema-grid { display: grid; grid-template-columns: 1fr 74px 1fr 74px 1.15fr; align-items: center; }
+  .entity { align-self: stretch; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
+  .entity h3 { margin: 0; padding: 11px 13px; background: var(--blue-soft); color: var(--blue); font: 700 12px var(--mono); }
+  .entity ul { margin: 0; padding: 7px 13px 11px; list-style: none; }
+  .entity li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--line); font: 10.5px var(--mono); }
+  .entity li:last-child { border: none; }
+  .entity em { color: var(--muted); font-style: normal; }
+  .relation { color: var(--muted); text-align: center; font: 10px/1.4 var(--mono); }
+  .relation b { display: block; color: var(--pine); font-size: 20px; }
+
+  .boundaries { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .boundary { padding: 17px; border-top: 4px solid var(--pine); }
+  .boundary.danger { border-top-color: var(--red); }
+  .boundary h3 { margin: 0 0 7px; font-size: 13px; }
+  .boundary p { margin: 0; color: var(--muted); font-size: 11.5px; }
+  .boundary code { color: var(--blue); font-size: 10.5px; overflow-wrap: anywhere; }
+  footer { padding: 20px 0 45px; color: var(--muted); font-size: 11.5px; text-align: center; }
+
+  @media (max-width: 980px) {
+    .flow-grid { grid-template-columns: 1fr; gap: 12px; }
+    .flow-step { min-height: auto; }
+    .flow-step:not(:last-child)::after { content: "↓"; left: 50%; top: calc(100% + 1px); transform: translateX(-50%); }
+    .schema-grid { grid-template-columns: 1fr; gap: 10px; }
+    .relation b { transform: rotate(90deg); }
+    .boundaries { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 680px) {
+    .shell { width: min(100% - 22px, 1180px); }
+    .hero { padding-top: 42px; }
+    .split, .jwt, .access-grid, .boundaries { grid-template-columns: 1fr; }
+    .result-bar { grid-template-columns: 1fr; text-align: left; }
+    .result-bar .plus { display: none; }
+    .result-bar span:last-child { text-align: left; }
+    th, td { padding: 11px; }
+  }
+  @media print {
+    body { background: #fff; }
+    .hero-actions { display: none; }
+    .card { box-shadow: none; break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<header class="hero shell">
+  <span class="eyebrow">Memory Agent Security Map</span>
+  <h1>회원가입부터 개인기억 보호까지</h1>
+  <p class="lead">아이디는 사람이 기억하기 위한 이름이고, UUID는 시스템이 신뢰하는 실제 신원입니다. JWT가 그 UUID를 매 요청에 증명하고, Supabase RLS가 데이터베이스에서 마지막 접근 경계를 만듭니다.</p>
+  <nav class="hero-actions" aria-label="문서 바로가기">
+    <a class="back" href="/">← 기억 서랍으로</a>
+    <a href="#signup">가입·로그인</a>
+    <a href="#jwt">JWT</a>
+    <a href="#rls">RLS</a>
+    <a href="#roles">역할</a>
+    <a href="#schema">스키마</a>
+  </nav>
+</header>
+
+<main class="shell">
+  <section aria-labelledby="overview-title">
+    <div class="section-head"><span class="section-no">01</span><h2 id="overview-title">한 요청이 지나가는 길</h2></div>
+    <div class="card flow">
+      <div class="flow-grid">
+        <article class="flow-step">
+          <span class="step-tag">BROWSER</span>
+          <h3>가입 또는 로그인</h3>
+          <p>사용자는 아이디·이메일·비밀번호를 입력합니다. 비밀번호는 브라우저 저장소에 보관하지 않습니다.</p>
+          <code>POST /api/signup<br>POST /api/login</code>
+        </article>
+        <article class="flow-step">
+          <span class="step-tag">FASTAPI</span>
+          <h3>입력 검증</h3>
+          <p><strong>admin</strong> 예약 여부, 아이디 형식과 요청을 검증하고 Supabase Auth에 인증을 요청합니다.</p>
+          <code>username → email lookup</code>
+        </article>
+        <article class="flow-step">
+          <span class="step-tag">SUPABASE AUTH</span>
+          <h3>UUID와 JWT 발급</h3>
+          <p>비밀번호를 검증하고 사용자의 불변 UUID를 <code>sub</code>에 담은 서명된 Access JWT를 발급합니다.</p>
+          <code>auth.users.id = JWT.sub</code>
+        </article>
+        <article class="flow-step">
+          <span class="step-tag">FASTAPI</span>
+          <h3>사용자 권한으로 요청</h3>
+          <p>JWT를 검증한 뒤 같은 Bearer JWT로 사용자 범위의 데이터베이스 요청을 보냅니다.</p>
+          <code>Authorization: Bearer &lt;JWT&gt;</code>
+        </article>
+        <article class="flow-step">
+          <span class="step-tag">POSTGRES RLS</span>
+          <h3>행 단위 차단</h3>
+          <p>공유기억과 JWT UUID가 소유한 개인기억만 반환합니다. 다른 사람의 개인 행은 보이지 않습니다.</p>
+          <code>auth.uid() = owner_user_id</code>
+        </article>
+      </div>
+      <div class="result-bar" aria-label="최종 검색 범위">
+        <span>모든 사용자가 보는 공유기억</span><span class="plus">+</span><span>현재 UUID가 소유한 개인기억</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="signup" aria-labelledby="signup-title">
+    <div class="section-head"><span class="section-no">02</span><h2 id="signup-title">일반 가입과 관리자 생성은 경로가 다릅니다</h2></div>
+    <div class="split">
+      <article class="card subcard">
+        <h3>일반 회원가입</h3>
+        <p>공개 화면에서는 일반 사용자만 생성합니다. 관리자 권한을 요청 본문으로 선택할 수 없습니다.</p>
+        <ol class="timeline">
+          <li><strong>브라우저</strong>가 <code>{ username, email, password }</code>를 전송합니다.</li>
+          <li><strong>FastAPI</strong>가 예약 아이디 <code>admin</code>과 중복·형식을 검증합니다.</li>
+          <li><strong>Supabase Auth</strong>가 UUID 사용자를 만들고 프로필에 아이디를 연결합니다.</li>
+          <li>이메일 확인 설정이 켜져 있으면 확인 안내를, 즉시 세션이면 앱 화면을 보여줍니다.</li>
+        </ol>
+        <div class="callout">비밀번호는 <code>account_profiles</code>나 기억 테이블에 저장되지 않습니다.</div>
+      </article>
+      <article class="card subcard">
+        <h3>초기 관리자 <code>admin</code></h3>
+        <p>서버를 관리할 수 있는 사람이 터미널에서 한 번 부트스트랩합니다.</p>
+        <code class="command">python scripts/bootstrap_admin.py --email 실제메일@example.com</code>
+        <ol class="timeline">
+          <li>비밀번호를 <strong>터미널에서 숨김 입력</strong>하며 파일이나 명령 기록에 넣지 않습니다.</li>
+          <li>서버 전용 Service Key로 Auth 사용자를 생성합니다. 같은 이메일의 기존 계정이 정확히 하나면 UUID를 유지한 채 승격합니다.</li>
+          <li><code>username='admin'</code>, <code>app_role='admin'</code>, 이메일 확인 상태를 설정합니다.</li>
+          <li><code>account_profiles</code>가 로그인 아이디 <code>admin</code>을 실제 이메일에 매핑합니다.</li>
+        </ol>
+        <div class="callout">일반 회원가입 API에서 <code>admin</code>은 항상 거부됩니다.</div>
+      </article>
+    </div>
+  </section>
+
+  <section id="jwt" aria-labelledby="jwt-title">
+    <div class="section-head"><span class="section-no">03</span><h2 id="jwt-title">JWT는 서명된 사용자 출입증입니다</h2></div>
+    <div class="card jwt">
+      <div class="jwt-copy">
+        <h3>읽을 수 있지만 고칠 수는 없습니다</h3>
+        <p>JWT 내용은 암호문이 아니므로 비밀을 넣지 않습니다. 대신 Supabase 서명이 붙어 있어 UUID나 역할을 바꾸면 검증에 실패합니다.</p>
+        <div class="token" aria-label="JWT의 세 부분">
+          <span class="header">HEADER</span><span class="payload">PAYLOAD</span><span class="signature">SIGNATURE</span>
+        </div>
+        <div class="callout">Access JWT와 Refresh Token은 JavaScript가 읽지 못하는 <strong>HttpOnly 쿠키</strong>로 전달합니다. 운영에서는 HTTPS와 Secure 쿠키가 필요합니다.</div>
+      </div>
+      <div class="claim-box" aria-label="JWT payload 예시">
+<pre>{
+  <span class="key">"sub"</span>: <span class="value">"7c52…-사용자-UUID"</span>,
+  <span class="key">"role"</span>: <span class="value">"authenticated"</span>,
+  <span class="key">"app_metadata"</span>: {
+    <span class="key">"app_role"</span>: <span class="value">"editor"</span>
+  },
+  <span class="key">"exp"</span>: <span class="value">1786200000</span>
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="rls" aria-labelledby="rls-title">
+    <div class="section-head"><span class="section-no">04</span><h2 id="rls-title">RLS가 개인기억을 행 단위로 격리합니다</h2></div>
+    <div class="card rls-wrap">
+<pre class="policy"><span class="sql-key">scope</span> = <span class="sql-value">'shared'</span>
+<span class="sql-key">OR</span> (
+  <span class="sql-key">scope</span> = <span class="sql-value">'personal'</span>
+  <span class="sql-key">AND owner_user_id</span> = auth.uid()  <span class="sql-key">-- JWT.sub</span>
+)</pre>
+      <div class="access-grid">
+        <article class="access-card"><h3><span class="dot"></span>공유기억</h3><p>로그인한 모든 계정이 검색하고 답변 근거로 사용할 수 있습니다.</p></article>
+        <article class="access-card"><h3><span class="dot"></span>내 개인기억</h3><p><code>owner_user_id</code>가 현재 JWT UUID와 같을 때만 사용할 수 있습니다.</p></article>
+        <article class="access-card denied"><h3><span class="dot"></span>남의 개인기억</h3><p>검색 결과가 아니라 데이터베이스 조회 단계에서 제외됩니다. 관리자도 예외가 아닙니다.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section id="roles" aria-labelledby="roles-title">
+    <div class="section-head"><span class="section-no">05</span><h2 id="roles-title">역할은 기능을, UUID는 소유권을 결정합니다</h2></div>
+    <div class="card table-wrap">
+      <table>
+        <thead><tr><th>역할</th><th>검색 범위</th><th>기억 저장</th><th>수정·삭제</th><th>운영 기능</th></tr></thead>
+        <tbody>
+          <tr><td>viewer</td><td>공유 + 본인 개인</td><td class="no">불가</td><td class="no">불가</td><td>없음</td></tr>
+          <tr><td>editor</td><td>공유 + 본인 개인</td><td class="yes">공유·개인</td><td>본인 개인 + 본인이 만든 공유</td><td>없음</td></tr>
+          <tr><td>admin</td><td>공유 + <strong>본인 개인만</strong></td><td class="yes">공유·개인</td><td>모든 공유 + 본인 개인</td><td>만료 정리·감사 로그</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="schema" aria-labelledby="schema-title">
+    <div class="section-head"><span class="section-no">06</span><h2 id="schema-title">UUID를 중심으로 연결되는 스키마</h2></div>
+    <div class="card schema">
+      <div class="schema-grid">
+        <article class="entity">
+          <h3>auth.users</h3>
+          <ul><li><strong>id</strong><em>UUID · PK</em></li><li>email<em>인증 주소</em></li><li>encrypted_password<em>Auth 관리</em></li><li>app_metadata<em>app_role</em></li></ul>
+        </article>
+        <div class="relation">1 : 1<b>↔</b>id</div>
+        <article class="entity">
+          <h3>public.account_profiles</h3>
+          <ul><li><strong>id</strong><em>UUID · PK/FK</em></li><li>username<em>UNIQUE</em></li><li>email<em>아이디 조회</em></li><li>created_at<em>timestamp</em></li></ul>
+        </article>
+        <div class="relation">1 : N<b>→</b>UUID</div>
+        <article class="entity">
+          <h3>public.memories</h3>
+          <ul><li><strong>id</strong><em>UUID · PK</em></li><li>scope<em>shared | personal</em></li><li>owner_user_id<em>개인 소유자</em></li><li>created_by_user_id<em>작성자</em></li><li>embedding<em>vector</em></li></ul>
+        </article>
+      </div>
+      <div class="callout">아이디나 이메일이 바뀌어도 <code>auth.users.id</code> UUID는 유지되므로 기억 소유권이 흔들리지 않습니다.</div>
+      <div class="callout">사용자가 바꿀 수 있는 <code>user_metadata.username</code>은 표시 이름이나 권한 판정에 쓰지 않습니다. FastAPI는 인증된 UUID로 비공개 <code>account_profiles</code>를 다시 조회합니다.</div>
+    </div>
+  </section>
+
+  <section aria-labelledby="boundary-title">
+    <div class="section-head"><span class="section-no">07</span><h2 id="boundary-title">보안 경계 체크</h2></div>
+    <div class="boundaries">
+      <article class="card boundary"><h3>브라우저</h3><p>HttpOnly 토큰은 JavaScript에서 읽지 못합니다. 로컬 저장소에는 사용자 UUID별 질문·답변만 두고, 검색 근거의 전체 원문은 저장하지 않습니다.</p></article>
+      <article class="card boundary"><h3>RLS</h3><p>FastAPI 필터가 실수하더라도 PostgreSQL이 <code>auth.uid()</code>로 다른 개인 행을 한 번 더 차단합니다.</p></article>
+      <article class="card boundary danger"><h3>서버 전용 비밀</h3><p><code>SUPABASE_SERVICE_KEY</code>와 <code>OPENAI_API_KEY</code>는 RLS 우회·외부 과금 권한이 있으므로 절대 공유하거나 브라우저에 보내지 않습니다.</p></article>
+      <article class="card boundary"><h3>기억 입력</h3><p>OpenAI API 키처럼 보이는 문자열은 저장 전에 거부하고, 과거 키 행은 검색 대상에서 격리합니다. 노출된 키는 즉시 폐기·재발급합니다.</p></article>
+    </div>
+  </section>
+</main>
+
+<footer class="shell">이 문서는 현재 기억 서랍의 인증·권한·데이터 경계를 설명하는 정적 기술 시각화입니다.</footer>
+</body>
+</html>

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -225,6 +226,48 @@ class _MemoryClient:
         return _MemoryQuery(self)
 
 
+class _ProfileQuery:
+    """Minimal account_profiles query fake used by username login tests."""
+
+    def __init__(self, client):
+        self.client = client
+        self.username = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        assert column == "username"
+        self.username = value
+        return self
+
+    def limit(self, _count):
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def single(self):
+        return self
+
+    def execute(self):
+        self.client.lookups.append(self.username)
+        email = self.client.profiles.get(self.username)
+        return _result([{"email": email, "username": self.username}] if email else [])
+
+
+class _ProfileClient:
+    def __init__(self, profiles=()):
+        self.profiles = dict(profiles)
+        self.lookups = []
+        self.table_calls = []
+
+    def table(self, name):
+        assert name == "account_profiles"
+        self.table_calls.append(name)
+        return _ProfileQuery(self)
+
+
 def _memory(memory_id, *, scope="shared", owner=None, creator=ALICE_ID, content=None):
     return {
         "id": memory_id,
@@ -240,22 +283,382 @@ def _memory(memory_id, *, scope="shared", owner=None, creator=ALICE_ID, content=
     }
 
 
-def test_auth_user_identity_uses_supabase_uuid_and_app_metadata_role():
+def test_auth_user_identity_uses_trusted_username_and_app_metadata_role():
     identity = main.auth_user_identity(SimpleNamespace(
         id=ALICE_ID,
         email="Alice@Example.COM",
+        user_metadata={"username": "alice"},
         app_metadata={"app_role": "admin"},
-    ))
+    ), trusted_username="alice")
 
     assert identity == {
         "id": ALICE_ID,
-        "username": "alice@example.com",
+        "username": "alice",
         "email": "alice@example.com",
         "role": "admin",
     }
 
     with pytest.raises(ValueError, match="UUID"):
         main.auth_user_identity(SimpleNamespace(id="mutable-username", email="alice@example.com"))
+
+
+def test_auth_user_identity_never_trusts_user_metadata_for_admin_role():
+    identity = main.auth_user_identity(SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        user_metadata={"username": "alice", "app_role": "admin", "role": "admin"},
+        app_metadata={},
+    ))
+
+    assert identity["username"] == "alice@example.com"
+    assert identity["role"] == "editor"
+
+
+def test_canonical_auth_identity_uses_uuid_profile_not_mutable_metadata(monkeypatch):
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        user_metadata={"username": "bob"},
+        app_metadata={},
+    )
+    lookups = []
+
+    def profile_by_id(user_id):
+        lookups.append(user_id)
+        return {"id": ALICE_ID, "username": "alice", "email": "alice@example.com"}
+
+    monkeypatch.setattr(main, "account_profile_by_user_id", profile_by_id)
+
+    identity = main.canonical_auth_user_identity(auth_user)
+
+    assert lookups == [ALICE_ID]
+    assert identity["username"] == "alice"
+    assert identity["role"] == "editor"
+
+
+def test_signup_is_an_open_api_route(monkeypatch):
+    assert "/api/signup" in main.OPEN_PATHS
+    monkeypatch.setattr(
+        main,
+        "restore_supabase_session",
+        lambda *_args: pytest.fail("public signup must not require an existing session"),
+    )
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    response = asyncio.run(
+        main.auth_middleware(_request("POST", "/api/signup"), call_next)
+    )
+
+    assert response.status_code == 200
+    _assert_private_no_store(response)
+    _assert_security_headers(response)
+
+
+@pytest.mark.parametrize(
+    "username",
+    [
+        "admin",
+        " ADMIN ",
+        "ab",
+        "alice!",
+        "alice@example.com",
+        "한글아이디",
+    ],
+)
+def test_public_signup_rejects_reserved_or_invalid_username(username):
+    with pytest.raises(ValidationError):
+        main.SignupRequest(
+            username=username,
+            email="alice@example.com",
+            password="correct horse battery staple",
+        )
+
+
+def test_signup_normalizes_username_and_passes_it_as_auth_user_metadata(monkeypatch):
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        user_metadata={"username": "alice_01"},
+        app_metadata={},
+    )
+    calls = []
+
+    class FakeAuth:
+        def sign_up(self, payload):
+            calls.append(payload)
+            return SimpleNamespace(user=auth_user, session=None)
+
+    monkeypatch.setattr(
+        main,
+        "new_supabase_client",
+        lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
+    )
+    monkeypatch.setattr(main, "admin_sb", _ProfileClient())
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    response = Response()
+
+    result = main.signup(
+        main.SignupRequest(
+            username=" Alice_01 ",
+            email="Alice@Example.COM ",
+            password="correct horse battery staple",
+        ),
+        _request("POST", "/api/signup"),
+        response,
+    )
+
+    assert calls == [{
+        "email": "alice@example.com",
+        "password": "correct horse battery staple",
+        "options": {
+            "data": {
+                "username": "alice_01",
+                "email": "alice@example.com",
+            }
+        },
+    }]
+    assert result["ok"] is True
+    assert result["user"]["username"] == "alice_01"
+    assert result["requires_email_confirmation"] is True
+    assert response.headers.getlist("set-cookie") == []
+
+
+def test_signup_sets_session_cookies_when_email_confirmation_is_disabled(monkeypatch):
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        user_metadata={"username": "alice"},
+        app_metadata={},
+    )
+    session = SimpleNamespace(
+        access_token="signup-access-token",
+        refresh_token="signup-refresh-token",
+        expires_in=1800,
+    )
+
+    class FakeAuth:
+        def sign_up(self, _payload):
+            return SimpleNamespace(user=auth_user, session=session)
+
+    monkeypatch.setattr(
+        main,
+        "new_supabase_client",
+        lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
+    )
+    monkeypatch.setattr(main, "admin_sb", _ProfileClient())
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    response = Response()
+
+    result = main.signup(
+        main.SignupRequest(
+            username="alice",
+            email="alice@example.com",
+            password="correct horse battery staple",
+        ),
+        _request("POST", "/api/signup"),
+        response,
+    )
+
+    cookies = response.headers.getlist("set-cookie")
+    assert result["requires_email_confirmation"] is False
+    assert result["user"]["id"] == ALICE_ID
+    assert any(f"{main.ACCESS_COOKIE}=signup-access-token" in value for value in cookies)
+    assert any(f"{main.REFRESH_COOKIE}=signup-refresh-token" in value for value in cookies)
+
+
+def test_login_resolves_username_to_profile_email_and_admin_role(monkeypatch):
+    profiles = _ProfileClient({"admin": "admin@example.com"})
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="admin@example.com",
+        user_metadata={"username": "admin"},
+        app_metadata={"app_role": "admin"},
+    )
+    session = SimpleNamespace(
+        access_token="admin-access-token",
+        refresh_token="admin-refresh-token",
+        expires_in=1800,
+    )
+    login_payloads = []
+
+    class FakeAuth:
+        def sign_in_with_password(self, payload):
+            login_payloads.append(payload)
+            return SimpleNamespace(user=auth_user, session=session)
+
+    monkeypatch.setattr(main, "admin_sb", profiles)
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_user_id",
+        lambda user_id: {
+            "id": user_id,
+            "username": "admin",
+            "email": "admin@example.com",
+        },
+    )
+    monkeypatch.setattr(
+        main,
+        "new_supabase_client",
+        lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
+    )
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "_login_failures", {})
+    response = Response()
+
+    result = main.login(
+        main.LoginRequest(username=" ADMIN ", password="admin-password"),
+        _request("POST", "/api/login"),
+        response,
+    )
+
+    assert profiles.lookups == ["admin"]
+    assert login_payloads == [{
+        "email": "admin@example.com",
+        "password": "admin-password",
+    }]
+    assert result["user"]["username"] == "admin"
+    assert result["user"]["role"] == "admin"
+
+
+def test_login_accepts_email_without_profile_lookup(monkeypatch):
+    profiles = _ProfileClient({"alice": "alice@example.com"})
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        user_metadata={"username": "alice"},
+        app_metadata={},
+    )
+    session = SimpleNamespace(
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_in=1800,
+    )
+    login_payloads = []
+
+    class FakeAuth:
+        def sign_in_with_password(self, payload):
+            login_payloads.append(payload)
+            return SimpleNamespace(user=auth_user, session=session)
+
+    monkeypatch.setattr(main, "admin_sb", profiles)
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_user_id",
+        lambda user_id: {
+            "id": user_id,
+            "username": "alice",
+            "email": "alice@example.com",
+        },
+    )
+    monkeypatch.setattr(
+        main,
+        "new_supabase_client",
+        lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
+    )
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "_login_failures", {})
+
+    result = main.login(
+        main.LoginRequest(username=" Alice@Example.COM ", password="password"),
+        _request("POST", "/api/login"),
+        Response(),
+    )
+
+    assert profiles.lookups == []
+    assert login_payloads == [{
+        "email": "alice@example.com",
+        "password": "password",
+    }]
+    assert result["user"]["username"] == "alice"
+
+
+def test_login_reloads_username_from_authenticated_uuid(monkeypatch):
+    profiles = _ProfileClient({"alice": "alice@example.com"})
+    auth_user = SimpleNamespace(
+        id=BOB_ID,
+        email="alice@example.com",
+        user_metadata={"username": "alice"},
+        app_metadata={},
+    )
+    session = SimpleNamespace(
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_in=1800,
+    )
+    uuid_lookups = []
+    audits = []
+
+    class FakeAuth:
+        def sign_in_with_password(self, _payload):
+            return SimpleNamespace(user=auth_user, session=session)
+
+    def profile_by_id(user_id):
+        uuid_lookups.append(user_id)
+        return {"id": BOB_ID, "username": "bob", "email": "alice@example.com"}
+
+    monkeypatch.setattr(main, "admin_sb", profiles)
+    monkeypatch.setattr(main, "account_profile_by_user_id", profile_by_id)
+    monkeypatch.setattr(
+        main,
+        "new_supabase_client",
+        lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
+    )
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *args, **kwargs: audits.append((args, kwargs)),
+    )
+    monkeypatch.setattr(main, "_login_failures", {})
+
+    result = main.login(
+        main.LoginRequest(username="alice", password="password"),
+        _request("POST", "/api/login"),
+        Response(),
+    )
+
+    assert uuid_lookups == [BOB_ID]
+    assert result["user"]["username"] == "bob"
+    assert audits == [(('bob', 'editor', 'login'), {
+        "actor_user_id": BOB_ID,
+        "ip": "127.0.0.1",
+    })]
+
+
+def test_failed_login_audit_never_uses_attempted_admin_as_actor(monkeypatch):
+    audits = []
+
+    class FakeAuth:
+        def sign_in_with_password(self, _payload):
+            raise ValueError("invalid credentials")
+
+    monkeypatch.setattr(main, "admin_sb", _ProfileClient())
+    monkeypatch.setattr(
+        main,
+        "new_supabase_client",
+        lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
+    )
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *args, **kwargs: audits.append((args, kwargs)),
+    )
+    monkeypatch.setattr(main, "_login_failures", {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.login(
+            main.LoginRequest(username="admin", password="wrong-password"),
+            _request("POST", "/api/login"),
+            Response(),
+        )
+
+    assert exc_info.value.status_code == 401
+    assert audits == [(('unauthenticated', 'unknown', 'login_failed'), {
+        "ip": "127.0.0.1",
+        "attempted_identifier_kind": "username",
+        "attempted_identifier_hash": main.hashlib.sha256(b"admin").hexdigest()[:16],
+    })]
 
 
 def test_restore_supabase_session_validates_user_and_creates_jwt_scoped_client(monkeypatch):
@@ -277,6 +680,11 @@ def test_restore_supabase_session_validates_user_and_creates_jwt_scoped_client(m
         return auth_client if access_token is None else request_db
 
     monkeypatch.setattr(main, "new_supabase_client", fake_new_client)
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_user_id",
+        lambda user_id: {"id": user_id, "username": "alice"},
+    )
 
     restored = main.restore_supabase_session("access-token", "refresh-token")
 
@@ -319,6 +727,11 @@ def test_restore_supabase_session_refreshes_when_only_refresh_cookie_remains(mon
         return auth_client if access_token is None else request_db
 
     monkeypatch.setattr(main, "new_supabase_client", fake_new_client)
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_user_id",
+        lambda user_id: {"id": user_id, "username": "alice"},
+    )
 
     restored = main.restore_supabase_session("", "remaining-refresh-token")
 

@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from supabase import create_client
 from supabase.client import ClientOptions
 from starlette.concurrency import run_in_threadpool
@@ -77,7 +77,7 @@ _management_catalog_cache: dict[str, tuple[float, list[dict]]] = {}
 
 VALID_ROLES = {"viewer", "editor", "admin"}
 ROLE_LEVEL = {"viewer": 1, "editor": 2, "admin": 3}
-OPEN_PATHS = {"/api/login", "/healthz"}
+OPEN_PATHS = {"/api/login", "/api/signup", "/healthz"}
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_ATTEMPTS = 5
 ACCESS_COOKIE = "ma_access_token"
@@ -85,6 +85,9 @@ REFRESH_COOKIE = "ma_refresh_token"
 _login_failures: dict[str, list[float]] = {}
 COOKIE_SECURE = COOKIE_SECURE or IS_PRODUCTION
 AUTH_ENABLED = True
+USERNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,31}$")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+RESERVED_USERNAMES = {"admin"}
 
 
 def new_supabase_client(*, access_token: Optional[str] = None):
@@ -100,7 +103,19 @@ def new_supabase_client(*, access_token: Optional[str] = None):
     )
 
 
-def auth_user_identity(auth_user: object) -> dict:
+def normalize_username(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def valid_username(value: str) -> bool:
+    return bool(USERNAME_PATTERN.fullmatch(value))
+
+
+def auth_user_identity(
+    auth_user: object,
+    *,
+    trusted_username: Optional[str] = None,
+) -> dict:
     raw_id = str(getattr(auth_user, "id", "") or "")
     try:
         user_id = str(uuid.UUID(raw_id))
@@ -115,12 +130,51 @@ def auth_user_identity(auth_user: object) -> dict:
     if role not in VALID_ROLES:
         role = "viewer"
     email = str(getattr(auth_user, "email", "") or "").strip().lower()
+    # username은 사용자가 직접 바꿀 수 있는 user_metadata가 아니라, 서버가
+    # account_profiles에서 읽었거나 가입 요청에서 검증한 값만 사용합니다.
+    account_username = normalize_username(trusted_username)
+    if not valid_username(account_username):
+        account_username = email or user_id
+    # 일반 사용자가 표시 이름만 admin으로 바꾸는 것도 허용하지 않습니다.
+    if account_username == "admin" and role != "admin":
+        account_username = email or user_id
     return {
         "id": user_id,
-        "username": email or user_id,
+        "username": account_username,
         "email": email,
         "role": role,
     }
+
+
+def canonical_auth_user_identity(
+    auth_user: object,
+    *,
+    trusted_username: Optional[str] = None,
+) -> dict:
+    """Build an identity without trusting user-editable Auth metadata.
+
+    A username resolved by the server (for example, username login) can be passed
+    as ``trusted_username``. Otherwise the canonical username is loaded by the
+    immutable Auth UUID from ``account_profiles``. If that optional display-name
+    lookup is unavailable, verified Auth email/UUID is the safe fallback; role
+    authorization always comes from server-controlled ``app_metadata``.
+    """
+
+    identity = auth_user_identity(auth_user, trusted_username=trusted_username)
+    if trusted_username is not None:
+        return identity
+
+    try:
+        profile = account_profile_by_user_id(identity["id"])
+    except Exception as exc:
+        logger.warning("Canonical account profile lookup failed: %s", type(exc).__name__)
+        return identity
+    if not profile:
+        return identity
+    return auth_user_identity(
+        auth_user,
+        trusted_username=str(profile.get("username") or ""),
+    )
 
 
 def restore_supabase_session(access_token: str, refresh_token: str) -> Optional[dict]:
@@ -156,7 +210,7 @@ def restore_supabase_session(access_token: str, refresh_token: str) -> Optional[
         refresh_token = session.refresh_token
 
     try:
-        user = auth_user_identity(auth_user)
+        user = canonical_auth_user_identity(auth_user)
     except ValueError:
         return None
     return {
@@ -262,6 +316,7 @@ def needs_security_migration(exc: Exception) -> bool:
             "owner_user_id",
             "created_by_user_id",
             "query_scope",
+            "account_profiles",
         )
     )
 
@@ -352,11 +407,148 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class SignupRequest(BaseModel):
+    username: str = ""
+    email: str = ""
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        username = normalize_username(value)
+        if not valid_username(username):
+            raise ValueError(
+                "아이디는 영문 소문자 또는 숫자로 시작하고, "
+                "3~32자의 영문 소문자·숫자·._-만 사용할 수 있어요."
+            )
+        if username in RESERVED_USERNAMES:
+            raise ValueError("admin 아이디는 관리자 전용으로 예약되어 있어요.")
+        return username
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        email = value.strip().lower()
+        if len(email) > 254 or not EMAIL_PATTERN.fullmatch(email):
+            raise ValueError("올바른 이메일 주소를 입력하세요.")
+        return email
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if not 8 <= len(value) <= 128:
+            raise ValueError("비밀번호는 8~128자로 입력하세요.")
+        return value
+
+
 def login_attempts(ip: str) -> list[float]:
     cutoff = time.monotonic() - LOGIN_WINDOW_SECONDS
     recent = [attempt for attempt in _login_failures.get(ip, []) if attempt >= cutoff]
     _login_failures[ip] = recent
     return recent
+
+
+def account_profile_by_username(username: str) -> Optional[dict]:
+    result = (
+        admin_sb.table("account_profiles")
+        .select("id,username,email")
+        .eq("username", username)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def account_profile_by_user_id(user_id: str) -> Optional[dict]:
+    result = (
+        admin_sb.table("account_profiles")
+        .select("id,username,email")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def resolve_login_email(identifier: str) -> str:
+    normalized = identifier.strip().lower()
+    if "@" in normalized:
+        return normalized
+    if not valid_username(normalized):
+        return ""
+    profile = account_profile_by_username(normalized)
+    if not profile:
+        return ""
+    return str(profile.get("email") or "").strip().lower()
+
+
+@app.post("/api/signup")
+def signup(req: SignupRequest, request: Request, response: Response):
+    username = normalize_username(req.username)
+    email = req.email.strip().lower()
+    password = req.password
+
+    if not valid_username(username):
+        raise HTTPException(
+            400,
+            "아이디는 영문 소문자 또는 숫자로 시작하고, 3~32자의 영문 소문자·숫자·._-만 사용할 수 있어요.",
+        )
+    if username in RESERVED_USERNAMES:
+        raise HTTPException(409, "admin 아이디는 관리자 전용으로 예약되어 있어요.")
+    if len(email) > 254 or not EMAIL_PATTERN.fullmatch(email):
+        raise HTTPException(400, "올바른 이메일 주소를 입력하세요.")
+    if not 8 <= len(password) <= 128:
+        raise HTTPException(400, "비밀번호는 8~128자로 입력하세요.")
+
+    try:
+        if account_profile_by_username(username):
+            raise HTTPException(409, "이미 사용 중인 아이디입니다.")
+        auth_response = new_supabase_client().auth.sign_up({
+            "email": email,
+            "password": password,
+            "options": {"data": {"username": username, "email": email}},
+        })
+        auth_user = auth_response.user if auth_response else None
+        session = auth_response.session if auth_response else None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.info("Supabase signup failed: %s", type(exc).__name__)
+        if needs_security_migration(exc):
+            raise HTTPException(503, "Supabase에서 migration_auth_accounts.sql을 실행하세요.")
+        raise HTTPException(400, "회원가입에 실패했습니다. 이메일, 비밀번호 또는 중복 계정을 확인하세요.")
+
+    if not auth_user:
+        raise HTTPException(409, "이미 가입된 이메일이거나 계정을 생성하지 못했습니다.")
+
+    user = canonical_auth_user_identity(auth_user, trusted_username=username)
+    requires_email_confirmation = session is None
+    if session:
+        set_auth_cookies(
+            response,
+            session.access_token,
+            session.refresh_token,
+            access_max_age=int(session.expires_in or 0),
+        )
+
+    ip = request.client.host if request.client else "unknown"
+    write_audit(
+        user["username"], user["role"], "signup",
+        actor_user_id=user["id"], ip=ip,
+        requires_email_confirmation=requires_email_confirmation,
+    )
+    return {
+        "ok": True,
+        "user": user if session else {"username": username, "email": email},
+        "requires_email_confirmation": requires_email_confirmation,
+        "message": (
+            "확인 이메일을 보냈습니다. 이메일 인증 후 로그인하세요."
+            if requires_email_confirmation
+            else "회원가입과 로그인이 완료되었습니다."
+        ),
+    }
 
 
 @app.post("/api/login")
@@ -365,22 +557,44 @@ def login(req: LoginRequest, request: Request, response: Response):
     if len(login_attempts(ip)) >= LOGIN_MAX_ATTEMPTS:
         raise HTTPException(429, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.")
 
-    email = req.username.strip().lower()
+    identifier = req.username.strip().lower()
+    try:
+        email = resolve_login_email(identifier)
+    except Exception as exc:
+        logger.warning("Account profile lookup failed: %s", type(exc).__name__)
+        if needs_security_migration(exc):
+            raise HTTPException(503, "Supabase에서 migration_auth_accounts.sql을 실행하세요.")
+        email = ""
+
     try:
         auth_response = new_supabase_client().auth.sign_in_with_password({
-            "email": email,
+            "email": email or "missing-account@invalid.local",
             "password": req.password,
         })
         session = auth_response.session
-        user = auth_user_identity(auth_response.user) if auth_response.user else None
+        user = (
+            # 비밀번호 인증 뒤에는 입력한 아이디를 신뢰하지 않고, 실제 Auth UUID로
+            # 프로필을 다시 조회해 무결성 오류에서도 표시명/감사 actor를 보호합니다.
+            canonical_auth_user_identity(auth_response.user)
+            if auth_response.user
+            else None
+        )
     except Exception:
         session = None
         user = None
 
     if not session or not user:
         _login_failures.setdefault(ip, []).append(time.monotonic())
-        write_audit(email[:100] or "unknown", "unknown", "login_failed", ip=ip)
-        raise HTTPException(401, "이메일 또는 비밀번호가 맞지 않아요.")
+        identifier_digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
+        write_audit(
+            "unauthenticated",
+            "unknown",
+            "login_failed",
+            ip=ip,
+            attempted_identifier_kind="email" if "@" in identifier else "username",
+            attempted_identifier_hash=identifier_digest,
+        )
+        raise HTTPException(401, "아이디/이메일 또는 비밀번호가 맞지 않아요.")
 
     _login_failures.pop(ip, None)
     set_auth_cookies(
@@ -1551,3 +1765,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
+
+
+@app.get("/auth-architecture")
+def auth_architecture():
+    return FileResponse("static/auth-architecture.html")

@@ -43,11 +43,12 @@
     padding: 2px 6px; border-radius: 4px; background: var(--slate-soft);
     color: var(--slate); font-family: var(--mono); font-size: 10px; font-weight: 700;
   }
-  .logout-button, .activity-button {
+  .logout-button, .activity-button, .architecture-button {
     border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
     border-radius: 6px; padding: 5px 8px; font-size: 11px; cursor: pointer;
   }
-  .activity-button:hover { border-color: var(--pine); color: var(--pine); }
+  .activity-button:hover, .architecture-button:hover { border-color: var(--pine); color: var(--pine); }
+  .architecture-button { text-decoration: none; }
   .logout-button:hover { border-color: #D8B7B1; color: #8C3B2E; }
   .role-hidden { display: none !important; }
   main {
@@ -243,26 +244,56 @@
   #loginOverlay {
     display: none; position: fixed; inset: 0; z-index: 10;
     background: var(--bg);
-    align-items: center; justify-content: center;
+    align-items: center; justify-content: center; overflow-y: auto; padding: 20px;
   }
   #loginOverlay.show { display: flex; }
   .login-card {
     background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-    padding: 32px 36px; width: min(360px, 90vw); text-align: center;
+    padding: 30px 34px; width: min(410px, 100%); margin: auto; text-align: center;
   }
   .login-card h2 { font-size: 18px; font-weight: 800; margin-bottom: 6px; }
-  .login-card p { font-size: 13px; color: var(--ink-soft); margin-bottom: 18px; }
+  .login-card > p { font-size: 13px; color: var(--ink-soft); margin-bottom: 18px; }
+  .auth-tabs {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px;
+    margin-bottom: 18px; border-radius: 10px; background: var(--bg);
+  }
+  .login-card .auth-tab {
+    width: 100%; border: none; border-radius: 7px; padding: 8px;
+    background: transparent; color: var(--ink-soft); font-size: 13px;
+    font-weight: 650; cursor: pointer;
+  }
+  .login-card .auth-tab[aria-selected="true"] {
+    background: #fff; color: var(--pine); box-shadow: 0 1px 4px rgba(23, 33, 29, .09);
+  }
+  .auth-form[hidden] { display: none; }
+  .auth-field { text-align: left; }
+  .auth-field label {
+    display: block; margin: 0 2px 5px; color: var(--ink-soft);
+    font-size: 11.5px; font-weight: 650;
+  }
   .login-card input {
     width: 100%; border: 1px solid var(--line); border-radius: 9px;
     padding: 11px 14px; font: 14px "Pretendard Variable", sans-serif;
     outline: none; margin-bottom: 12px;
   }
   .login-card input:focus { border-color: var(--pine); }
-  .login-card button {
+  .login-card .auth-submit {
     width: 100%; background: var(--pine); color: #fff; border: none;
     padding: 11px; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer;
   }
+  .login-card .auth-submit:disabled { opacity: .55; cursor: wait; }
   .login-err { color: #8C3B2E; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
+  .signup-ok { color: var(--pine); }
+  .auth-note {
+    margin: -2px 2px 13px; padding: 9px 10px; border-radius: 8px;
+    background: var(--amber-soft); color: var(--amber); font-size: 11.5px;
+    line-height: 1.5; text-align: left;
+  }
+  .auth-doc-link {
+    display: inline-block; margin-top: 15px; color: var(--ink-soft);
+    font-size: 11.5px; text-underline-offset: 3px;
+  }
+  .auth-doc-link:hover { color: var(--pine); }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
@@ -392,30 +423,66 @@
 <body>
 
 <div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
-  <form class="login-card" id="loginForm">
+  <section class="login-card">
     <h2 id="loginTitle">기억 서랍</h2>
-    <p>계정으로 로그인하면 열려요</p>
-    <label class="sr-only" for="usernameBox">이메일</label>
-    <input type="email" id="usernameBox" name="username" placeholder="이메일" autocomplete="username" required>
-    <label class="sr-only" for="pwBox">비밀번호</label>
-    <input type="password" id="pwBox" name="password" placeholder="비밀번호" autocomplete="current-password" required>
-    <button type="submit" id="loginBtn">열기</button>
-    <div class="login-err" id="loginErr" role="alert" aria-live="polite"></div>
-  </form>
+    <p>내 기억과 모두의 기억을 안전하게 사용하세요</p>
+    <div class="auth-tabs" role="tablist" aria-label="계정 메뉴">
+      <button class="auth-tab" type="button" id="loginTab" role="tab" aria-controls="loginForm" aria-selected="true">로그인</button>
+      <button class="auth-tab" type="button" id="signupTab" role="tab" aria-controls="signupForm" aria-selected="false" tabindex="-1">회원가입</button>
+    </div>
+
+    <form class="auth-form" id="loginForm" role="tabpanel" aria-labelledby="loginTab">
+      <div class="auth-field">
+        <label for="usernameBox">아이디 또는 이메일</label>
+        <input type="text" id="usernameBox" name="username" placeholder="admin 또는 name@example.com" autocomplete="username" autocapitalize="none" required>
+      </div>
+      <div class="auth-field">
+        <label for="pwBox">비밀번호</label>
+        <input type="password" id="pwBox" name="password" placeholder="비밀번호" autocomplete="current-password" required>
+      </div>
+      <button class="auth-submit" type="submit" id="loginBtn">열기</button>
+      <div class="login-err" id="loginErr" role="alert" aria-live="polite"></div>
+    </form>
+
+    <form class="auth-form" id="signupForm" role="tabpanel" aria-labelledby="signupTab" hidden>
+      <div class="auth-field">
+        <label for="signupUsernameBox">아이디</label>
+        <input type="text" id="signupUsernameBox" name="username" placeholder="사용할 아이디" autocomplete="username" autocapitalize="none" minlength="3" maxlength="32" required>
+      </div>
+      <div class="auth-note"><strong>admin</strong> 아이디는 초기 관리자 계정 전용이라 일반 회원가입에 사용할 수 없습니다.</div>
+      <div class="auth-field">
+        <label for="signupEmailBox">이메일</label>
+        <input type="email" id="signupEmailBox" name="email" placeholder="name@example.com" autocomplete="email" required>
+      </div>
+      <div class="auth-field">
+        <label for="signupPwBox">비밀번호</label>
+        <input type="password" id="signupPwBox" name="password" placeholder="8자 이상" autocomplete="new-password" minlength="8" required>
+      </div>
+      <div class="auth-field">
+        <label for="signupPwConfirmBox">비밀번호 확인</label>
+        <input type="password" id="signupPwConfirmBox" name="password_confirmation" placeholder="비밀번호를 다시 입력" autocomplete="new-password" minlength="8" required>
+      </div>
+      <button class="auth-submit" type="submit" id="signupBtn">계정 만들기</button>
+      <div class="login-err" id="signupStatus" role="status" aria-live="polite"></div>
+    </form>
+
+    <a class="auth-doc-link" href="/auth-architecture" target="_blank" rel="noopener noreferrer">회원가입·JWT·개인기억 보호 구조 보기 →</a>
+  </section>
 </div>
 
-<header>
+<header inert aria-hidden="true">
   <h1>기억 서랍</h1>
   <p>Slack·메일·메모를 붙여넣어 저장하고, 나중에 물어보세요</p>
   <div class="session-info" id="sessionInfo" aria-label="현재 로그인 정보">
     <span class="session-user" id="sessionUser"></span>
     <span class="session-role" id="sessionRole"></span>
+    <a class="architecture-button" href="/auth-architecture" target="_blank" rel="noopener noreferrer">보안 구조</a>
     <button type="button" class="activity-button role-hidden" id="auditLogBtn">활동 로그</button>
     <button type="button" class="logout-button" id="logoutBtn">로그아웃</button>
   </div>
 </header>
 
-<main>
+<main inert aria-hidden="true">
   <section>
     <div class="panel role-hidden" id="ingestPanel">
       <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
@@ -988,14 +1055,24 @@ let chatRendered = false;
 function loadChatHistory() {
   try {
     const saved = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || "[]");
-    return Array.isArray(saved) ? saved.slice(-12) : [];
+    if (!Array.isArray(saved)) return [];
+    const sanitized = saved.slice(-12).map(message => ({
+      role: message && message.role === "assistant" ? "assistant" : "user",
+      content: String(message && message.content || ""),
+    }));
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(sanitized));
+    return sanitized;
   } catch (_) {
     return [];
   }
 }
 
 function saveChatHistory() {
-  localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatHistory.slice(-12)));
+  const persisted = chatHistory.slice(-12).map(message => ({
+    role: message.role === "assistant" ? "assistant" : "user",
+    content: String(message.content || ""),
+  }));
+  localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(persisted));
 }
 
 function botMessageHtml(answer, sources = []) {
@@ -1185,6 +1262,39 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function setAuthMode(mode, focus = true) {
+  const signupMode = mode === "signup";
+  $("loginForm").hidden = signupMode;
+  $("signupForm").hidden = !signupMode;
+  $("loginTab").setAttribute("aria-selected", String(!signupMode));
+  $("signupTab").setAttribute("aria-selected", String(signupMode));
+  $("loginTab").tabIndex = signupMode ? -1 : 0;
+  $("signupTab").tabIndex = signupMode ? 0 : -1;
+  $("loginErr").textContent = "";
+  $("signupStatus").textContent = "";
+  $("signupStatus").classList.remove("signup-ok");
+  if (focus) {
+    requestAnimationFrame(() => $(signupMode ? "signupUsernameBox" : "usernameBox").focus());
+  }
+}
+
+async function responsePayload(response) {
+  const raw = await response.text();
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch (_) { return { detail: raw }; }
+}
+
+function responseErrorMessage(data, fallback) {
+  const detail = data && data.detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map(item => String(item && item.msg || "")
+      .replace(/^Value error,\s*/i, "")).filter(Boolean);
+    if (messages.length) return messages.join(" ");
+  }
+  return (data && data.message) || fallback;
+}
+
 async function doLogin() {
   const username = $("usernameBox").value.trim();
   const pw = $("pwBox").value;
@@ -1198,11 +1308,9 @@ async function doLogin() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password: pw })
     });
+    const data = await responsePayload(r);
     if (!r.ok) {
-      const raw = await r.text();
-      let detail = "이메일 또는 비밀번호가 맞지 않아요.";
-      try { detail = JSON.parse(raw).detail || detail; } catch (_) {}
-      throw new Error(detail);
+      throw new Error(responseErrorMessage(data, "아이디, 이메일 또는 비밀번호가 맞지 않아요."));
     }
     if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
     $("loginOverlay").classList.remove("show");
@@ -1216,6 +1324,62 @@ async function doLogin() {
   } finally {
     button.disabled = false;
     button.textContent = "열기";
+  }
+}
+
+async function doSignup() {
+  const username = $("signupUsernameBox").value.trim();
+  const email = $("signupEmailBox").value.trim();
+  const password = $("signupPwBox").value;
+  const confirmation = $("signupPwConfirmBox").value;
+  const status = $("signupStatus");
+
+  status.classList.remove("signup-ok");
+  status.textContent = "";
+  if (username.toLowerCase() === "admin") {
+    status.textContent = "admin은 관리자 전용 예약 아이디입니다.";
+    $("signupUsernameBox").focus();
+    return;
+  }
+  if (password !== confirmation) {
+    status.textContent = "비밀번호 확인이 일치하지 않습니다.";
+    $("signupPwConfirmBox").value = "";
+    $("signupPwConfirmBox").focus();
+    return;
+  }
+
+  const button = $("signupBtn");
+  button.disabled = true;
+  button.textContent = "계정 만드는 중";
+  try {
+    const response = await fetch("/api/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, email, password }),
+    });
+    const data = await responsePayload(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(responseErrorMessage(data, "회원가입을 완료하지 못했습니다."));
+    }
+
+    $("signupPwBox").value = "";
+    $("signupPwConfirmBox").value = "";
+    if (!data.requires_email_confirmation && await loadSession()) {
+      await loadRecent();
+      renderChatHistory();
+      return;
+    }
+
+    status.classList.add("signup-ok");
+    status.textContent = data.message || "가입 확인 메일을 보냈습니다. 이메일 확인 후 로그인하세요.";
+  } catch (error) {
+    status.textContent = error.message;
+    $("signupPwBox").value = "";
+    $("signupPwConfirmBox").value = "";
+    $("signupPwBox").focus();
+  } finally {
+    button.disabled = false;
+    button.textContent = "계정 만들기";
   }
 }
 
@@ -1241,6 +1405,7 @@ function applySession(data) {
   $("sessionRole").title = `권한: ${roleNames[role]}`;
   $("sessionInfo").classList.add("show");
   $("loginOverlay").classList.remove("show");
+  setAppInert(false);
   $("ingestPanel").classList.toggle("role-hidden", !canWrite());
   $("editSaveBtn").classList.toggle("role-hidden", !canWrite());
   $("auditLogBtn").classList.toggle("role-hidden", !isAdmin());
@@ -1270,9 +1435,17 @@ function showLogin() {
   $("auditLogBtn").classList.add("role-hidden");
   $("ingestPanel").classList.add("role-hidden");
   $("cleanBtn").style.display = "none";
+  setAppInert(true);
   $("loginOverlay").classList.add("show");
-  $("loginErr").textContent = "";
-  requestAnimationFrame(() => $("usernameBox").focus());
+  setAuthMode("login");
+}
+
+function setAppInert(isInert) {
+  document.querySelectorAll("body > header, body > main").forEach(element => {
+    element.inert = isInert;
+    if (isInert) element.setAttribute("aria-hidden", "true");
+    else element.removeAttribute("aria-hidden");
+  });
 }
 
 async function loadSession() {
@@ -1300,14 +1473,31 @@ async function logout() {
     clearChat();
     $("usernameBox").value = "";
     $("pwBox").value = "";
+    $("signupUsernameBox").value = "";
+    $("signupEmailBox").value = "";
+    $("signupPwBox").value = "";
+    $("signupPwConfirmBox").value = "";
     $("logoutBtn").disabled = false;
     showLogin();
   }
 }
 
+$("loginTab").addEventListener("click", () => setAuthMode("login"));
+$("signupTab").addEventListener("click", () => setAuthMode("signup"));
+document.querySelector(".auth-tabs").addEventListener("keydown", event => {
+  if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  event.preventDefault();
+  const nextMode = $("loginForm").hidden ? "login" : "signup";
+  setAuthMode(nextMode, false);
+  $(nextMode === "signup" ? "signupTab" : "loginTab").focus();
+});
 $("loginForm").addEventListener("submit", event => {
   event.preventDefault();
   doLogin();
+});
+$("signupForm").addEventListener("submit", event => {
+  event.preventDefault();
+  doSignup();
 });
 $("logoutBtn").addEventListener("click", logout);
 $("auditLogBtn").addEventListener("click", openAuditLog);
