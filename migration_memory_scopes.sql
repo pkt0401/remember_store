@@ -1,43 +1,25 @@
--- Supabase SQL Editor에서 신규 프로젝트에 한 번 실행하세요.
+-- 기존 프로젝트에 공유/개인 기억, Supabase Auth UUID, RLS를 추가합니다.
+-- migration_security.sql 적용 후 실행하세요.
+--
+-- 기존 기억은 모두 공유 기억으로 전환합니다. 다만 실제 OpenAI API 키와 같은
+-- `sk-...` 비밀값이 들어 있는 행은 검색 대상에서 제거합니다. 키 문자열·해시·
+-- 임베딩은 폐기하고 마스킹된 기록만 public.quarantined_memories에 보존합니다.
+-- 격리 테이블은 service_role만 접근할 수 있으며 애플리케이션의 일반 기억
+-- 조회/RPC에서는 사용하지 않아야 합니다.
 
 begin;
 
 create extension if not exists vector;
 create extension if not exists pgcrypto;
 
-create table if not exists public.memories (
-  id uuid primary key default gen_random_uuid(),
-  source text not null default 'note',
-  content text not null,
-  content_hash text,
-  metadata jsonb not null default '{}'::jsonb,
-  embedding vector(1536),
-  expires_at timestamptz,
-  scope text not null default 'shared',
-  owner_user_id uuid references auth.users(id) on delete cascade,
-  created_by_user_id uuid default auth.uid()
-    references auth.users(id) on delete set null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint memories_scope_check
-    check (scope in ('shared', 'personal')),
-  constraint memories_scope_owner_check
-    check (
-      (scope = 'shared' and owner_user_id is null)
-      or
-      (scope = 'personal' and owner_user_id is not null)
-    )
-);
+alter table public.memories
+  add column if not exists scope text;
+alter table public.memories
+  add column if not exists owner_user_id uuid;
+alter table public.memories
+  add column if not exists created_by_user_id uuid;
 
--- 이미 일부 스키마가 생성된 프로젝트에서도 최종 컬럼 구성을 보장합니다.
-alter table public.memories add column if not exists content_hash text;
-alter table public.memories add column if not exists expires_at timestamptz;
-alter table public.memories add column if not exists updated_at timestamptz default now();
-alter table public.memories add column if not exists scope text;
-alter table public.memories add column if not exists owner_user_id uuid;
-alter table public.memories add column if not exists created_by_user_id uuid;
-
--- 기존 행은 모두의 기억으로 전환합니다. 이미 범위가 지정된 행은 보존합니다.
+-- 기존 행은 명시적으로 모두의 기억으로 backfill합니다.
 update public.memories
 set scope = 'shared',
     owner_user_id = null
@@ -51,7 +33,8 @@ alter table public.memories
 do $migration$
 begin
   if not exists (
-    select 1 from pg_constraint
+    select 1
+    from pg_constraint
     where conrelid = 'public.memories'::regclass
       and conname = 'memories_scope_check'
   ) then
@@ -61,7 +44,8 @@ begin
   end if;
 
   if not exists (
-    select 1 from pg_constraint
+    select 1
+    from pg_constraint
     where conrelid = 'public.memories'::regclass
       and conname = 'memories_scope_owner_check'
   ) then
@@ -75,7 +59,8 @@ begin
   end if;
 
   if not exists (
-    select 1 from pg_constraint
+    select 1
+    from pg_constraint
     where conrelid = 'public.memories'::regclass
       and conname = 'memories_owner_user_id_fkey'
   ) then
@@ -87,7 +72,8 @@ begin
   end if;
 
   if not exists (
-    select 1 from pg_constraint
+    select 1
+    from pg_constraint
     where conrelid = 'public.memories'::regclass
       and conname = 'memories_created_by_user_id_fkey'
   ) then
@@ -100,16 +86,32 @@ begin
 end;
 $migration$;
 
-update public.memories
-set updated_at = coalesce(created_at, now())
-where updated_at is null;
+alter table public.audit_logs
+  add column if not exists actor_user_id uuid;
 
-alter table public.memories alter column updated_at set default now();
-alter table public.memories alter column updated_at set not null;
+do $migration$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.audit_logs'::regclass
+      and conname = 'audit_logs_actor_user_id_fkey'
+  ) then
+    alter table public.audit_logs
+      add constraint audit_logs_actor_user_id_fkey
+      foreign key (actor_user_id)
+      references auth.users(id)
+      on delete set null;
+  end if;
+end;
+$migration$;
 
--- OpenAI API 키처럼 보이는 기존 기억은 일반 검색 대상과 물리적으로 분리합니다.
--- 실제 키와 그 임베딩은 남기지 않고 마스킹된 감사용 사본만 보존합니다.
--- 이 테이블은 아래에서 service_role 전용으로 잠급니다.
+create index if not exists audit_logs_actor_user_id_idx
+  on public.audit_logs (actor_user_id, created_at desc);
+
+-- 비밀값은 memories에 남겨 두지 않습니다. 실제 키와 그 임베딩은 폐기하고
+-- 마스킹된 감사용 사본만 별도 테이블에 보존합니다. 그래야 service_role을
+-- 사용하는 서버 코드가 범위 필터를 빠뜨려도 일반 검색 결과에 섞이지 않습니다.
 create table if not exists public.quarantined_memories (
   id uuid primary key,
   source text not null,
@@ -178,8 +180,7 @@ where (
 ) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
 on conflict (id) do nothing;
 
--- 이전에 이 스크립트가 일부 실행된 경우에도 격리본에서 실제 키와 임베딩을
--- 제거합니다. 원본 키가 이미 노출됐다면 별도로 키를 회전해야 합니다.
+-- 이전에 일부 실행된 격리본도 실제 키와 임베딩이 남지 않게 정리합니다.
 update public.quarantined_memories
 set source = regexp_replace(
       source,
@@ -211,13 +212,22 @@ where q.id = m.id
     || coalesce(m.metadata::text, '')
   ) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}';
 
--- 이후 저장은 아래의 파생 필드 트리거에서 같은 형태의 키를 차단합니다.
--- CHECK 위반은 실패한 행 전체를 DB 로그에 남길 수 있어 명시적 예외를 사용합니다.
+-- 같은 비밀값의 재저장은 아래 트리거가 차단합니다. CHECK 위반은 실패한 행
+-- 전체를 DB 로그에 남길 수 있어 키 내용이 없는 명시적 예외를 사용합니다.
 alter table public.memories
   drop constraint if exists memories_no_openai_api_key_check;
 
--- 동일 본문의 첫 레코드는 표준 해시를 사용합니다. 기존 중복 레코드는 보존하되
--- 같은 기억 공간 안의 중복에만 고유한 보조 해시를 부여합니다.
+alter table public.quarantined_memories enable row level security;
+alter table public.quarantined_memories force row level security;
+revoke all privileges on table public.quarantined_memories
+  from public, anon, authenticated;
+grant select, insert, delete on table public.quarantined_memories
+  to service_role;
+
+-- 중복은 전체 테이블이 아니라 기억 공간별로 판정합니다. PostgreSQL 15의
+-- NULLS NOT DISTINCT 덕분에 owner_user_id가 NULL인 공유 기억도 하나의 공간으로
+-- 취급됩니다. PostgREST upsert는 다른 작성자의 공유 행을 UPDATE하지 않도록
+-- ignore_duplicates/DO NOTHING을 사용해야 합니다.
 drop trigger if exists memories_set_derived_fields on public.memories;
 drop index if exists public.memories_content_hash_uidx;
 
@@ -254,51 +264,8 @@ from resolved
 where memories.id = resolved.id
   and memories.content_hash is distinct from resolved.desired_hash;
 
-alter table public.memories alter column content_hash set not null;
-
--- 같은 본문은 공유 공간과 각 사용자의 개인 공간에 각각 저장할 수 있습니다.
--- NULLS NOT DISTINCT를 사용해 owner가 NULL인 공유 공간도 하나의 공간으로 봅니다.
--- 앱 upsert는 다른 작성자의 공유 행을 UPDATE하지 않도록 DO NOTHING을 사용합니다.
 create unique index if not exists memories_scope_owner_content_hash_uidx
   on public.memories (scope, owner_user_id, content_hash) nulls not distinct;
-
-create index if not exists memories_embedding_idx
-  on public.memories using hnsw (embedding vector_cosine_ops);
-
-create index if not exists memories_source_idx
-  on public.memories (source);
-
-create index if not exists memories_created_at_id_idx
-  on public.memories (created_at desc, id desc);
-
-create index if not exists memories_scope_owner_created_at_idx
-  on public.memories (scope, owner_user_id, created_at desc, id desc);
-
-create index if not exists memories_expires_at_idx
-  on public.memories (expires_at)
-  where expires_at is not null;
-
--- PostgREST JSON 경로 필터와 향후 DB 직접 필터링을 위한 표현식 인덱스입니다.
-create index if not exists memories_metadata_person_idx
-  on public.memories ((metadata ->> 'person'));
-
-create index if not exists memories_metadata_sender_idx
-  on public.memories ((metadata ->> 'sender'));
-
-create index if not exists memories_metadata_project_idx
-  on public.memories ((metadata ->> 'project'));
-
-create index if not exists memories_metadata_status_idx
-  on public.memories ((metadata ->> 'status'));
-
-create index if not exists memories_metadata_work_date_idx
-  on public.memories ((metadata ->> 'work_date'));
-
-create index if not exists memories_metadata_record_type_idx
-  on public.memories ((metadata ->> 'record_type'));
-
-create index if not exists memories_metadata_tags_gin_idx
-  on public.memories using gin ((metadata -> 'tags'));
 
 create or replace function public.set_memory_derived_fields()
 returns trigger
@@ -335,7 +302,6 @@ begin
       'hex'
     );
   else
-    -- 메타데이터만 수정할 때는 마이그레이션된 중복 행의 보조 해시를 보존합니다.
     new.content_hash := old.content_hash;
   end if;
 
@@ -349,60 +315,20 @@ begin
 end;
 $$;
 
-drop trigger if exists memories_set_derived_fields on public.memories;
 create trigger memories_set_derived_fields
 before insert or update on public.memories
 for each row execute function public.set_memory_derived_fields();
 
-create table if not exists public.audit_logs (
-  id uuid primary key default gen_random_uuid(),
-  actor text not null,
-  actor_user_id uuid references auth.users(id) on delete set null,
-  role text not null,
-  action text not null,
-  memory_id uuid,
-  details jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
-);
+create index if not exists memories_scope_owner_created_at_idx
+  on public.memories (scope, owner_user_id, created_at desc, id desc);
 
-alter table public.audit_logs add column if not exists actor_user_id uuid;
-
-do $migration$
-begin
-  if not exists (
-    select 1 from pg_constraint
-    where conrelid = 'public.audit_logs'::regclass
-      and conname = 'audit_logs_actor_user_id_fkey'
-  ) then
-    alter table public.audit_logs
-      add constraint audit_logs_actor_user_id_fkey
-      foreign key (actor_user_id)
-      references auth.users(id)
-      on delete set null;
-  end if;
-end;
-$migration$;
-
--- 삭제된 기억의 ID도 감사 로그에 남길 수 있도록 외래 키를 두지 않습니다.
-alter table public.audit_logs
-  drop constraint if exists audit_logs_memory_id_fkey;
-
-create index if not exists audit_logs_memory_id_idx
-  on public.audit_logs (memory_id);
-
-create index if not exists audit_logs_created_at_idx
-  on public.audit_logs (created_at desc);
-
-create index if not exists audit_logs_actor_user_id_idx
-  on public.audit_logs (actor_user_id, created_at desc);
-
--- 벡터 유사도 검색 함수 (코사인). 만료된 기억은 검색하지 않습니다.
--- shared 모드는 공유 기억만, personal 모드는 공유 + 현재 사용자 개인기억을
--- 반환합니다. 기본값은 개인기억을 노출하지 않는 shared입니다. JWT가 있으면
--- 전달된 UUID보다 auth.uid()를 우선해 다른 사용자의 UUID를 가장할 수 없습니다.
 drop function if exists public.match_memories(vector, integer, text);
 drop function if exists public.match_memories(vector, integer, text, text, uuid);
 
+-- query_scope='shared': 모두의 기억만
+-- query_scope='personal': 모두의 기억 + requesting_user_id의 개인기억
+-- 기본값을 shared로 두어 구버전 호출이 개인기억을 노출하지 않게 합니다. JWT가
+-- 있으면 전달된 UUID보다 auth.uid()를 우선합니다.
 create function public.match_memories(
   query_embedding vector(1536),
   match_count int default 8,
@@ -457,19 +383,15 @@ as $$
   limit greatest(least(coalesce(match_count, 8), 100), 1);
 $$;
 
--- 로그인 사용자는 공유 기억과 자신의 개인기억만 볼 수 있습니다. 쓰기는
--- editor/admin만 가능하고, admin도 다른 사용자의 개인기억은 수정/삭제할 수
--- 없습니다. app_role이 없는 일반 가입자는 애플리케이션과 동일하게 editor입니다.
--- service_role은 RLS를 우회하므로 백엔드 코드에서도 반드시 같은 필터를 적용합니다.
+-- RLS는 authenticated JWT의 auth.uid()를 기준으로 적용됩니다. 쓰기는
+-- app_metadata.app_role의 editor/admin만 가능하며 누락된 역할은 editor입니다.
+-- admin도 다른 사용자의 개인기억에는 접근하지 못합니다. service_role은 관리
+-- 작업용으로 유지되므로 백엔드도 동일한 scope/owner 필터를 적용해야 합니다.
 alter table public.memories enable row level security;
 alter table public.memories force row level security;
-alter table public.audit_logs enable row level security;
-alter table public.audit_logs force row level security;
-alter table public.quarantined_memories enable row level security;
-alter table public.quarantined_memories force row level security;
 
--- 이전 설치에서 남은 permissive 정책이 OR 결합되어 개인기억을 노출하지 않도록
--- memories와 격리 테이블의 기존 정책을 제거한 뒤 허용 정책을 다시 만듭니다.
+-- RLS 정책은 permissive 정책끼리 OR 결합됩니다. 이전에 남은 광범위한 정책을
+-- 제거하고 아래의 범위 정책만 다시 만들어 개인기억 노출을 방지합니다.
 do $policies$
 declare
   existing_policy record;
@@ -613,18 +535,8 @@ using (
 );
 
 revoke all privileges on table public.memories from public, anon, authenticated;
-revoke all privileges on table public.audit_logs from public, anon, authenticated;
-revoke all privileges on table public.quarantined_memories
-  from public, anon, authenticated;
 grant select, insert, update, delete on table public.memories to authenticated;
 grant select, insert, update, delete on table public.memories to service_role;
-grant select, insert on table public.audit_logs to service_role;
-grant select, insert, delete on table public.quarantined_memories to service_role;
-
-revoke all on function public.set_memory_derived_fields()
-  from public, anon, authenticated;
-grant execute on function public.set_memory_derived_fields()
-  to service_role;
 
 revoke all on function public.match_memories(vector, integer, text, text, uuid)
   from public, anon, authenticated;

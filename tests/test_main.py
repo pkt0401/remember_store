@@ -1,34 +1,49 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 
-# Importing main constructs SDK clients. Use inert credentials so test collection
-# never depends on a developer's .env values or sends requests to real services.
+# Importing main constructs SDK clients. Use inert credentials so collection never
+# depends on a developer's .env values or sends requests to real services.
 os.environ["SUPABASE_URL"] = "https://example.supabase.co"
 os.environ["SUPABASE_SERVICE_KEY"] = "test-service-key"
+os.environ["SUPABASE_PUBLISHABLE_KEY"] = "test-publishable-key"
 os.environ["OPENAI_API_KEY"] = "sk-test"
 os.environ["APP_ENV"] = "development"
-os.environ["APP_PASSWORD"] = ""
-os.environ["APP_USERS_JSON"] = ""
-os.environ["APP_SECRET"] = "test-session-secret-at-least-16-chars"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import main  # noqa: E402
 
 
-def _request(method: str, path: str, cookie: str | None = None) -> Request:
+ALICE_ID = "11111111-1111-4111-8111-111111111111"
+BOB_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def _user(user_id=ALICE_ID, *, role="editor", email=None):
+    email = email or ("alice@example.com" if user_id == ALICE_ID else "bob@example.com")
+    return {
+        "id": user_id,
+        "username": email,
+        "email": email,
+        "role": role,
+    }
+
+
+def _request(method: str, path: str, *, cookies=None, user=None, db=None) -> Request:
     headers = []
-    if cookie:
-        headers.append((b"cookie", f"ma_session={cookie}".encode()))
-    return Request(
+    if cookies:
+        cookie_value = "; ".join(f"{name}={value}" for name, value in cookies.items())
+        headers.append((b"cookie", cookie_value.encode()))
+    request = Request(
         {
             "type": "http",
             "http_version": "1.1",
@@ -42,70 +57,279 @@ def _request(method: str, path: str, cookie: str | None = None) -> Request:
             "server": ("testserver", 80),
         }
     )
+    if user is not None:
+        request.state.user = user
+    if db is not None:
+        request.state.db = db
+    return request
 
 
-def _result(data):
-    return SimpleNamespace(data=data)
+def _result(data, *, count=None):
+    return SimpleNamespace(data=data, count=count)
 
 
 def _assert_security_headers(response):
-    assert response.headers['x-content-type-options'] == 'nosniff'
-    assert response.headers['x-frame-options'] == 'DENY'
-    assert response.headers['referrer-policy'] == 'no-referrer'
-    assert response.headers['permissions-policy'] == 'camera=(), microphone=(), geolocation=()'
-    assert response.headers['content-security-policy']
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=()"
+    assert response.headers["content-security-policy"]
 
 
-class _CatalogQuery:
-    def __init__(self, rows):
-        self.rows = rows
+def _assert_private_no_store(response, *, no_transform=False):
+    directives = {
+        directive.strip().lower()
+        for directive in response.headers["cache-control"].split(",")
+    }
+    assert {"private", "no-store"} <= directives
+    assert ("no-transform" in directives) is no_transform
 
-    def select(self, *_args, **_kwargs):
+
+class _MemoryQuery:
+    """Small in-memory PostgREST fake that honors the app's visibility filter."""
+
+    def __init__(self, client):
+        self.client = client
+        self.operation = None
+        self.values = None
+        self.equal_filters = []
+        self.in_filters = []
+        self.null_filters = []
+        self.visibility_user_id = None
+        self.range_bounds = None
+        self.limit_count = None
+        self.want_count = False
+
+    def select(self, *_args, **kwargs):
+        self.operation = "select"
+        self.want_count = kwargs.get("count") == "exact"
+        return self
+
+    def insert(self, values):
+        self.operation = "insert"
+        self.values = [dict(value) for value in values] if isinstance(values, list) else [dict(values)]
+        return self
+
+    def upsert(self, values, *, on_conflict, ignore_duplicates=False):
+        self.operation = "upsert"
+        self.values = [dict(value) for value in values]
+        self.client.upserts.append({
+            "rows": self.values,
+            "on_conflict": on_conflict,
+            "ignore_duplicates": ignore_duplicates,
+        })
+        return self
+
+    def update(self, values):
+        self.operation = "update"
+        self.values = dict(values)
+        return self
+
+    def delete(self):
+        self.operation = "delete"
+        return self
+
+    def eq(self, column, value):
+        self.equal_filters.append((column, value))
+        return self
+
+    def in_(self, column, values):
+        self.in_filters.append((column, set(values)))
+        return self
+
+    def is_(self, column, value):
+        assert value == "null"
+        self.null_filters.append(column)
+        return self
+
+    def or_(self, expression):
+        self.client.visibility_expressions.append(expression)
+        match = re.search(r"owner_user_id\.eq\.([0-9a-fA-F-]{36})", expression)
+        if match:
+            self.visibility_user_id = match.group(1)
         return self
 
     def order(self, *_args, **_kwargs):
         return self
 
-    def range(self, *_args, **_kwargs):
+    def range(self, start, end):
+        self.range_bounds = (start, end)
         return self
 
+    def limit(self, count):
+        self.limit_count = count
+        return self
+
+    def lt(self, column, value):
+        self.client.lt_filters.append((column, value))
+        return self
+
+    def _matches(self, row):
+        if self.visibility_user_id is not None and not (
+            row.get("scope") in {None, "shared"}
+            or (
+                row.get("scope") == "personal"
+                and row.get("owner_user_id") == self.visibility_user_id
+            )
+        ):
+            return False
+        if any(row.get(column) != value for column, value in self.equal_filters):
+            return False
+        if any(row.get(column) not in values for column, values in self.in_filters):
+            return False
+        if any(row.get(column) is not None for column in self.null_filters):
+            return False
+        return True
+
     def execute(self):
-        return _result(self.rows)
+        self.client.executed_operations.append(self.operation)
+        if self.operation == "insert":
+            self.client.rows.extend(self.values)
+            return _result([dict(row) for row in self.values])
+        if self.operation == "upsert":
+            self.client.rows.extend(self.values)
+            return _result([dict(row) for row in self.values])
+
+        matched = [row for row in self.client.rows if self._matches(row)]
+        if self.operation == "select":
+            count = len(matched) if self.want_count else None
+            if self.range_bounds:
+                start, end = self.range_bounds
+                matched = matched[start:end + 1]
+            if self.limit_count is not None:
+                matched = matched[:self.limit_count]
+            return _result([dict(row) for row in matched], count=count)
+        if self.operation == "update":
+            for row in matched:
+                row.update(self.values)
+            return _result([dict(row) for row in matched])
+        if self.operation == "delete":
+            matched_ids = {id(row) for row in matched}
+            self.client.rows = [row for row in self.client.rows if id(row) not in matched_ids]
+            return _result([dict(row) for row in matched])
+        raise AssertionError(f"unexpected operation: {self.operation}")
 
 
-class _CatalogSupabase:
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls = 0
+class _MemoryClient:
+    def __init__(self, rows=()):
+        self.rows = [dict(row) for row in rows]
+        self.upserts = []
+        self.visibility_expressions = []
+        self.executed_operations = []
+        self.lt_filters = []
+        self.table_calls = 0
 
     def table(self, name):
         assert name == "memories"
-        self.calls += 1
-        return _CatalogQuery(self.rows)
+        self.table_calls += 1
+        return _MemoryQuery(self)
 
 
-def test_session_token_rejects_expiry_and_tampering(monkeypatch):
-    monkeypatch.setattr(main, "APP_SECRET", "unit-test-signing-secret")
-    monkeypatch.setattr(main, "SESSION_TTL_SECONDS", 60)
+def _memory(memory_id, *, scope="shared", owner=None, creator=ALICE_ID, content=None):
+    return {
+        "id": memory_id,
+        "source": "note",
+        "content": content or f"{memory_id} content",
+        "content_hash": f"hash-{memory_id}",
+        "metadata": {"tags": [], "work_date": "2026-08-09"},
+        "created_at": "2026-08-09T01:00:00+00:00",
+        "expires_at": None,
+        "scope": scope,
+        "owner_user_id": owner,
+        "created_by_user_id": creator,
+    }
 
-    token = main.make_session_token("alice", "editor", now=1_000)
-    claims = main.verify_session_token(token, now=1_059)
 
-    assert claims is not None
-    assert claims["sub"] == "alice"
-    assert claims["role"] == "editor"
-    assert main.verify_session_token(token, now=1_060) is None
+def test_auth_user_identity_uses_supabase_uuid_and_app_metadata_role():
+    identity = main.auth_user_identity(SimpleNamespace(
+        id=ALICE_ID,
+        email="Alice@Example.COM",
+        app_metadata={"app_role": "admin"},
+    ))
 
-    payload, signature = token.split(".", 1)
-    replacement = "A" if signature[-1] != "A" else "B"
-    assert main.verify_session_token(f"{payload}.{signature[:-1]}{replacement}", now=1_001) is None
+    assert identity == {
+        "id": ALICE_ID,
+        "username": "alice@example.com",
+        "email": "alice@example.com",
+        "role": "admin",
+    }
 
-    decoded = json.loads(main._b64decode(payload))
-    decoded["role"] = "admin"
-    tampered_payload = main._b64encode(
-        json.dumps(decoded, separators=(",", ":")).encode()
+    with pytest.raises(ValueError, match="UUID"):
+        main.auth_user_identity(SimpleNamespace(id="mutable-username", email="alice@example.com"))
+
+
+def test_restore_supabase_session_validates_user_and_creates_jwt_scoped_client(monkeypatch):
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        app_metadata={},
     )
-    assert main.verify_session_token(f"{tampered_payload}.{signature}", now=1_001) is None
+    auth_api = SimpleNamespace(get_user=lambda token: (
+        _result(None) if token != "access-token"
+        else SimpleNamespace(user=auth_user)
+    ))
+    auth_client = SimpleNamespace(auth=auth_api)
+    request_db = object()
+    calls = []
+
+    def fake_new_client(*, access_token=None):
+        calls.append(access_token)
+        return auth_client if access_token is None else request_db
+
+    monkeypatch.setattr(main, "new_supabase_client", fake_new_client)
+
+    restored = main.restore_supabase_session("access-token", "refresh-token")
+
+    assert restored["user"]["id"] == ALICE_ID
+    assert restored["user"]["role"] == "editor"
+    assert restored["db"] is request_db
+    assert restored["refreshed"] is False
+    assert calls == [None, "access-token"]
+
+
+def test_restore_supabase_session_refreshes_when_only_refresh_cookie_remains(monkeypatch):
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        app_metadata={},
+    )
+    refreshed_session = SimpleNamespace(
+        access_token="new-access-token",
+        refresh_token="new-refresh-token",
+        expires_in=1800,
+    )
+    refresh_calls = []
+
+    def unexpected_get_user(_token):
+        raise AssertionError("missing access cookie must skip get_user")
+
+    def refresh_session(refresh_token):
+        refresh_calls.append(refresh_token)
+        return SimpleNamespace(session=refreshed_session, user=auth_user)
+
+    auth_client = SimpleNamespace(auth=SimpleNamespace(
+        get_user=unexpected_get_user,
+        refresh_session=refresh_session,
+    ))
+    request_db = object()
+    client_calls = []
+
+    def fake_new_client(*, access_token=None):
+        client_calls.append(access_token)
+        return auth_client if access_token is None else request_db
+
+    monkeypatch.setattr(main, "new_supabase_client", fake_new_client)
+
+    restored = main.restore_supabase_session("", "remaining-refresh-token")
+
+    assert restored["user"]["id"] == ALICE_ID
+    assert restored["db"] is request_db
+    assert restored["access_token"] == "new-access-token"
+    assert restored["refresh_token"] == "new-refresh-token"
+    assert restored["expires_in"] == 1800
+    assert restored["refreshed"] is True
+    assert refresh_calls == ["remaining-refresh-token"]
+    assert client_calls == [None, "new-access-token"]
 
 
 @pytest.mark.parametrize(
@@ -122,12 +346,57 @@ def test_role_permission_matrix(role, allowed):
         assert main.role_allows(role, action) is (action in allowed)
 
 
+def test_auth_middleware_attaches_user_and_request_scoped_db(monkeypatch):
+    request_db = object()
+    restored = {
+        "user": _user(),
+        "db": request_db,
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "expires_in": 3600,
+        "refreshed": False,
+    }
+    seen_tokens = []
+
+    def fake_restore(access_token, refresh_token):
+        seen_tokens.append((access_token, refresh_token))
+        return restored
+
+    monkeypatch.setattr(main, "restore_supabase_session", fake_restore)
+    request = _request(
+        "POST",
+        "/api/ingest",
+        cookies={
+            main.ACCESS_COOKIE: "access-token",
+            main.REFRESH_COOKIE: "refresh-token",
+        },
+    )
+
+    async def call_next(received):
+        assert received.state.user == _user()
+        assert received.state.db is request_db
+        return JSONResponse({"ok": True})
+
+    response = asyncio.run(main.auth_middleware(request, call_next))
+
+    assert response.status_code == 200
+    assert seen_tokens == [("access-token", "refresh-token")]
+    _assert_private_no_store(response)
+    _assert_security_headers(response)
+
+
 def test_auth_middleware_blocks_viewer_write(monkeypatch):
-    monkeypatch.setattr(main, "AUTH_ENABLED", True)
     monkeypatch.setattr(
         main,
-        "verify_session_token",
-        lambda _token: {"sub": "reader", "role": "viewer"},
+        "restore_supabase_session",
+        lambda *_args: {
+            "user": _user(role="viewer"),
+            "db": object(),
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 0,
+            "refreshed": False,
+        },
     )
     monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
     called = False
@@ -138,52 +407,61 @@ def test_auth_middleware_blocks_viewer_write(monkeypatch):
         return JSONResponse({"ok": True})
 
     response = asyncio.run(
-        main.auth_middleware(
-            _request("PATCH", "/api/memories/abc", "valid-token"), call_next
-        )
+        main.auth_middleware(_request("PATCH", "/api/memories/abc"), call_next)
     )
 
     assert response.status_code == 403
     assert not called
+    _assert_private_no_store(response)
     _assert_security_headers(response)
 
 
-def test_auth_middleware_attaches_editor_identity(monkeypatch):
-    monkeypatch.setattr(main, "AUTH_ENABLED", True)
-    monkeypatch.setattr(
-        main,
-        "verify_session_token",
-        lambda _token: {"sub": "writer", "role": "editor"},
-    )
-    request = _request("POST", "/api/ingest", "valid-token")
-
-    async def call_next(received):
-        assert received.state.user == {"username": "writer", "role": "editor"}
-        return JSONResponse({"ok": True})
-
-    response = asyncio.run(main.auth_middleware(request, call_next))
-
-    assert response.status_code == 200
-    _assert_security_headers(response)
-
-
-def test_auth_middleware_adds_security_headers_to_unauthorized_response(monkeypatch):
-    monkeypatch.setattr(main, 'AUTH_ENABLED', True)
-    monkeypatch.setattr(main, 'APP_USERS', {})
-    monkeypatch.setattr(main, 'verify_session_token', lambda _token: None)
+def test_auth_middleware_rejects_missing_or_invalid_supabase_session(monkeypatch):
+    monkeypatch.setattr(main, "restore_supabase_session", lambda *_args: None)
     called = False
 
     async def call_next(_request):
         nonlocal called
         called = True
-        return JSONResponse({'ok': True})
+        return JSONResponse({"ok": True})
 
     response = asyncio.run(
-        main.auth_middleware(_request('GET', '/api/memories'), call_next)
+        main.auth_middleware(_request("GET", "/api/memories"), call_next)
     )
 
     assert response.status_code == 401
     assert not called
+    _assert_private_no_store(response)
+    _assert_security_headers(response)
+
+
+def test_auth_middleware_preserves_no_transform_on_streaming_api_response(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "restore_supabase_session",
+        lambda *_args: {
+            "user": _user(),
+            "db": object(),
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+            "refreshed": False,
+        },
+    )
+
+    async def call_next(_request):
+        return main.StreamingResponse(
+            iter(["stream chunk"]),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache, no-transform"},
+        )
+
+    response = asyncio.run(
+        main.auth_middleware(_request("POST", "/api/ask/stream"), call_next)
+    )
+
+    assert response.status_code == 200
+    _assert_private_no_store(response, no_transform=True)
     _assert_security_headers(response)
 
 
@@ -235,7 +513,9 @@ def test_normalize_parsed_payload_sanitizes_untrusted_fields():
 def test_normalize_parsed_payload_chunks_long_fallback():
     original = "x" * 13_001
 
-    payload = main.normalize_parsed_payload({"source": "slack", "records": "bad"}, original)
+    payload = main.normalize_parsed_payload(
+        {"source": "slack", "records": "bad"}, original
+    )
 
     assert payload["source"] == "note"
     assert len(payload["records"]) == 3
@@ -244,307 +524,318 @@ def test_normalize_parsed_payload_chunks_long_fallback():
     assert all(record["tags"] == [] for record in payload["records"])
 
 
-def test_password_hash_verification_accepts_only_correct_password():
-    encoded = main.make_password_hash("correct-password", iterations=100_000)
-
-    assert main.verify_password("correct-password", {"password_hash": encoded})
-    assert not main.verify_password("wrong-password", {"password_hash": encoded})
-
-
 @pytest.mark.parametrize(
-    "encoded",
-    [
-        "not-a-password-hash",
-        "md5$100000$aa$bb",
-        "pbkdf2_sha256$99999$aa$bb",
-        "pbkdf2_sha256$not-an-int$aa$bb",
-        "pbkdf2_sha256$100000$not-hex$deadbeef",
-    ],
+    ("scope", "expected_owner"),
+    [("personal", ALICE_ID), ("shared", None)],
 )
-def test_password_hash_verification_rejects_malformed_values(encoded):
-    assert not main.verify_password("password", {"password_hash": encoded})
-
-
-def test_ingest_uses_content_hash_batch_upsert_without_delete_or_rpc(monkeypatch):
-    parsed_records = [
-        {
-            "content": "existing memory",
-            "metadata": {"person": "곽진성", "status": "완료"},
-            "tags": ["G-core"],
-            "expires_at": None,
-        },
-        {
-            "content": "new memory",
-            "metadata": {"person": "곽진성", "status": "할 일"},
-            "tags": ["ATL"],
-            "expires_at": None,
-        },
-        {
-            "content": "existing memory",
-            "metadata": {"person": "duplicate input"},
-            "tags": [],
-            "expires_at": None,
-        },
-    ]
-    parser_result = json.dumps({"source": " SLACK ", "records": parsed_records})
-
-    class FakeChatCompletions:
-        def __init__(self):
-            self.calls = 0
-
-        def create(self, **_kwargs):
-            self.calls += 1
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=parser_result))]
-            )
-
-    class FakeEmbeddings:
-        def __init__(self):
-            self.inputs = []
-
-        def create(self, *, model, input):
-            assert model == main.EMBED_MODEL
-            self.inputs.append(list(input))
-            return SimpleNamespace(
-                data=[SimpleNamespace(embedding=[float(index)]) for index, _ in enumerate(input)]
-            )
-
-    fake_chat = FakeChatCompletions()
-    fake_embeddings = FakeEmbeddings()
+def test_ingest_sets_scope_owner_creator_and_space_scoped_conflict_key(
+    monkeypatch, scope, expected_owner
+):
+    db = _MemoryClient()
     monkeypatch.setattr(
         main,
-        "oai",
-        SimpleNamespace(
-            chat=SimpleNamespace(completions=fake_chat),
-            embeddings=fake_embeddings,
-        ),
+        "parse_pasted_text",
+        lambda _text: {
+            "source": "note",
+            "records": [{
+                "content": "remember this",
+                "metadata": {"status": "참고"},
+                "tags": ["test"],
+                "expires_at": None,
+            }],
+        },
     )
-
-    existing_hash = main.hashlib.sha256(b"slack\0existing memory").hexdigest()
-
-    class FakeMemoryQuery:
-        def __init__(self, store):
-            self.store = store
-            self.operation = None
-            self.hashes = []
-
-        def select(self, columns):
-            assert columns == "content_hash"
-            self.operation = "select"
-            return self
-
-        def in_(self, column, values):
-            assert column == "content_hash"
-            self.hashes = list(values)
-            return self
-
-        def upsert(self, rows, on_conflict):
-            self.operation = "upsert"
-            self.store.upserts.append((rows, on_conflict))
-            return self
-
-        def delete(self):
-            self.store.delete_calls += 1
-            raise AssertionError("ingest must not delete an existing memory")
-
-        def execute(self):
-            if self.operation == "select":
-                matches = self.store.existing_hashes.intersection(self.hashes)
-                return _result([{"content_hash": value} for value in matches])
-            if self.operation == "upsert":
-                return _result(self.store.upserts[-1][0])
-            raise AssertionError("unexpected Supabase operation")
-
-    class FakeSupabase:
-        def __init__(self):
-            self.existing_hashes = {existing_hash}
-            self.upserts = []
-            self.delete_calls = 0
-            self.rpc_calls = 0
-
-        def table(self, name):
-            assert name == "memories"
-            return FakeMemoryQuery(self)
-
-        def rpc(self, *_args, **_kwargs):
-            self.rpc_calls += 1
-            raise AssertionError("ingest must not use vector RPC for duplicate detection")
-
-    fake_sb = FakeSupabase()
-    monkeypatch.setattr(main, "sb", fake_sb)
+    monkeypatch.setattr(main, "embed", lambda texts: [[0.1] for _ in texts])
     monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(main, "_catalog_cache_time", 123.0)
+    monkeypatch.setattr(main, "_catalog_cache", {ALICE_ID: (1.0, [{"id": "stale"}])})
+    monkeypatch.setattr(main, "_management_catalog_cache", {ALICE_ID: (1.0, [])})
 
     result = main.ingest(
-        main.IngestRequest(text="input text"),
-        _request("POST", "/api/ingest"),
+        main.IngestRequest(text="remember this", scope=scope),
+        _request("POST", "/api/ingest", user=_user(), db=db),
     )
 
-    assert result["source"] == "slack"
-    assert result["saved"] == 2
-    assert result["replaced"] == 1
-    assert fake_chat.calls == 1
-    assert fake_embeddings.inputs == [["existing memory", "new memory"]]
-    assert fake_sb.rpc_calls == 0
-    assert fake_sb.delete_calls == 0
-    assert len(fake_sb.upserts) == 1
-
-    rows, conflict = fake_sb.upserts[0]
-    assert conflict == "content_hash"
-    assert len(rows) == 2
-    assert {row["content_hash"] for row in rows} == {
-        main.hashlib.sha256(f"slack\0{row['content']}".encode()).hexdigest()
-        for row in rows
-    }
-    assert len({row["metadata"]["batch_id"] for row in rows}) == 1
-    assert main._catalog_cache_time == 0.0
+    assert result["scope"] == scope
+    assert result["saved"] == 1
+    assert result["skipped"] == 0
+    assert len(db.upserts) == 1
+    upsert = db.upserts[0]
+    assert upsert["on_conflict"] == "scope,owner_user_id,content_hash"
+    assert upsert["ignore_duplicates"] is True
+    row = upsert["rows"][0]
+    assert row["scope"] == scope
+    assert row["owner_user_id"] == expected_owner
+    assert row["created_by_user_id"] == ALICE_ID
+    assert main._catalog_cache == {}
+    assert main._management_catalog_cache == {}
 
 
-def test_memory_catalog_filters_expired_rows_and_caches(monkeypatch):
-    rows = [
-        {
-            "id": "expired",
-            "source": "note",
-            "content": "old",
-            "metadata": {},
-            "created_at": "2020-01-01T00:00:00+00:00",
-            "expires_at": "2020-01-02T00:00:00+00:00",
-        },
-        {
-            "id": "active",
-            "source": "note",
-            "content": "current",
-            "metadata": {},
-            "created_at": "2020-01-01T00:00:00+00:00",
-            "expires_at": "2999-01-01T00:00:00+00:00",
-        },
-        {
-            "id": "permanent",
-            "source": "note",
-            "content": "permanent",
-            "metadata": {},
-            "created_at": "2020-01-01T00:00:00+00:00",
-            "expires_at": None,
-        },
-    ]
-    fake = _CatalogSupabase(rows)
-    monkeypatch.setattr(main, "sb", fake)
-    monkeypatch.setattr(main, "_catalog_cache", [])
-    monkeypatch.setattr(main, "_catalog_cache_time", 0.0)
+@pytest.mark.parametrize("scope", ["personal", "shared"])
+def test_ingest_rejects_openai_api_key_before_parser_or_storage(monkeypatch, scope):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("OpenAI key input must be rejected before external work")
 
-    first = main.memory_catalog()
-    second = main.memory_catalog()
+    monkeypatch.setattr(main, "parse_pasted_text", unexpected)
+    monkeypatch.setattr(main, "embed", unexpected)
 
-    assert [row["id"] for row in first] == ["active", "permanent"]
-    assert second == first
-    assert fake.calls == 1
+    with pytest.raises(HTTPException) as exc_info:
+        main.ingest(
+            main.IngestRequest(
+                text="API key: sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+                scope=scope,
+            ),
+            _request("POST", "/api/ingest"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "API 키" in exc_info.value.detail
 
 
-def test_filtered_list_supports_legacy_sender_tags_pagination_and_count(monkeypatch):
-    def legacy_row(memory_id, created_at, sender='레거시 담당자', tags=None):
-        return {
-            'id': memory_id,
-            'source': 'slack',
-            'content': '진행 중인 레거시 업무',
-            'metadata': {
-                'sender': sender,
-                'tags': tags or ['AI Tech Innovation팀', 'Legacy Project'],
-            },
-            'created_at': created_at,
-            'expires_at': None,
-        }
+def test_memory_catalog_is_isolated_by_user_uuid_and_cached_per_user(monkeypatch):
+    db = _MemoryClient([
+        _memory("shared", scope="shared", creator=BOB_ID),
+        _memory("alice-private", scope="personal", owner=ALICE_ID),
+        _memory("bob-private", scope="personal", owner=BOB_ID, creator=BOB_ID),
+    ])
+    monkeypatch.setattr(main, "_catalog_cache", {})
+    monkeypatch.setattr(main, "_management_catalog_cache", {})
 
-    rows = [
-        legacy_row('newest', '2026-08-07T03:00:00+00:00'),
-        legacy_row('middle', '2026-08-07T02:00:00+00:00'),
-        legacy_row('oldest', '2026-08-07T01:00:00+00:00'),
-        legacy_row('other-person', '2026-08-07T00:00:00+00:00', sender='다른 담당자'),
-        legacy_row('other-project', '2026-08-06T23:00:00+00:00', tags=['Other Project']),
-    ]
-    catalog_calls = 0
+    alice_first = main.memory_catalog(db, ALICE_ID)
+    alice_second = main.memory_catalog(db, ALICE_ID)
+    bob_first = main.memory_catalog(db, BOB_ID)
 
-    def fake_all_memory_catalog():
-        nonlocal catalog_calls
-        catalog_calls += 1
-        return rows
+    assert [row["id"] for row in alice_first] == ["shared", "alice-private"]
+    assert alice_second == alice_first
+    assert [row["id"] for row in bob_first] == ["shared", "bob-private"]
+    assert db.table_calls == 2
+    assert set(main._catalog_cache) == {ALICE_ID, BOB_ID}
+    assert ALICE_ID in db.visibility_expressions[0]
+    assert BOB_ID in db.visibility_expressions[1]
 
-    monkeypatch.setattr(main, 'all_memory_catalog', fake_all_memory_catalog)
+
+def test_list_memories_includes_shared_and_own_but_hides_other_personal():
+    db = _MemoryClient([
+        _memory("shared", scope="shared", creator=BOB_ID),
+        _memory("alice-private", scope="personal", owner=ALICE_ID),
+        _memory("bob-private", scope="personal", owner=BOB_ID, creator=BOB_ID),
+    ])
     response = Response()
 
     items = main.list_memories(
+        request=_request("GET", "/api/memories", user=_user(), db=db),
+        response=response,
+    )
+
+    assert {item["id"] for item in items} == {"shared", "alice-private"}
+    assert "bob-private" not in {item["id"] for item in items}
+    assert response.headers["x-total-count"] == "2"
+    by_id = {item["id"]: item for item in items}
+    assert by_id["shared"]["scope"] == "shared"
+    assert by_id["shared"]["can_edit"] is False
+    assert by_id["alice-private"]["scope"] == "personal"
+    assert by_id["alice-private"]["can_edit"] is True
+    assert db.visibility_expressions == [
+        "scope.eq.shared,"
+        f"and(scope.eq.personal,owner_user_id.eq.{ALICE_ID})"
+    ]
+
+
+def test_filtered_list_supports_legacy_sender_tags_pagination_and_count(monkeypatch):
+    def legacy_row(memory_id, created_at, sender="레거시 담당자", tags=None):
+        row = _memory(memory_id, content="진행 중인 레거시 업무")
+        row["created_at"] = created_at
+        row["metadata"] = {
+            "sender": sender,
+            "tags": tags or ["AI Tech Innovation팀", "Legacy Project"],
+        }
+        return row
+
+    rows = [
+        legacy_row("newest", "2026-08-07T03:00:00+00:00"),
+        legacy_row("middle", "2026-08-07T02:00:00+00:00"),
+        legacy_row("oldest", "2026-08-07T01:00:00+00:00"),
+        legacy_row("other-person", "2026-08-07T00:00:00+00:00", sender="다른 담당자"),
+        legacy_row("other-project", "2026-08-06T23:00:00+00:00", tags=["Other Project"]),
+    ]
+    calls = []
+
+    def fake_all_memory_catalog(db, user_id):
+        calls.append((db, user_id))
+        return rows
+
+    db = object()
+    monkeypatch.setattr(main, "all_memory_catalog", fake_all_memory_catalog)
+    response = Response()
+
+    items = main.list_memories(
+        request=_request("GET", "/api/memories", user=_user(), db=db),
         response=response,
         limit=1,
         offset=1,
-        person='레거시 담당자',
-        project='Legacy Project',
+        person="레거시 담당자",
+        project="Legacy Project",
     )
 
-    assert catalog_calls == 1
-    assert response.headers['x-total-count'] == '3'
-    assert [item['id'] for item in items] == ['middle']
-    assert items[0]['metadata']['person'] == '레거시 담당자'
-    assert items[0]['metadata']['project'] == 'Legacy Project'
+    assert calls == [(db, ALICE_ID)]
+    assert response.headers["x-total-count"] == "3"
+    assert [item["id"] for item in items] == ["middle"]
+    assert items[0]["metadata"]["person"] == "레거시 담당자"
+    assert items[0]["metadata"]["project"] == "Legacy Project"
 
 
-def test_prepare_answer_excludes_old_assistant_and_includes_metadata(monkeypatch):
-    hit = {
-        "id": "memory-1",
-        "source": "slack",
-        "content": "출제 에이전트 고도화를 완료했다.",
-        "metadata": {
-            "person": "곽진성",
-            "project": "G-core Quick Win",
-            "status": "완료",
-            "work_date": "2026-08-07",
-            "due_date": "2026-08-14",
-            "category": "업무",
-            "record_type": "work",
-            "tags": ["G-core"],
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_other_users_personal_memory_cannot_be_updated_or_deleted(monkeypatch, operation):
+    db = _MemoryClient([
+        _memory("bob-private", scope="personal", owner=BOB_ID, creator=BOB_ID),
+    ])
+    request = _request(
+        "PATCH" if operation == "update" else "DELETE",
+        "/api/memories/bob-private",
+        user=_user(),
+        db=db,
+    )
+    monkeypatch.setattr(main, "embed", lambda *_args: (_ for _ in ()).throw(
+        AssertionError("hidden memory must not reach embedding")
+    ))
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        if operation == "update":
+            main.update_memory(
+                "bob-private",
+                main.UpdateMemoryRequest(content="attempted overwrite"),
+                request,
+            )
+        else:
+            main.delete_memory("bob-private", request)
+
+    assert exc_info.value.status_code == 404
+    assert db.executed_operations == ["select"]
+    assert db.rows[0]["content"] == "bob-private content"
+    assert ALICE_ID in db.visibility_expressions[0]
+
+
+def test_update_rejects_openai_api_key_before_lookup_or_embedding():
+    with pytest.raises(HTTPException) as exc_info:
+        main.update_memory(
+            "memory-id",
+            main.UpdateMemoryRequest(
+                content="sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+            ),
+            _request("PATCH", "/api/memories/memory-id"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "API 키" in exc_info.value.detail
+
+
+def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup():
+    with pytest.raises(HTTPException) as exc_info:
+        main.update_memory(
+            "memory-id",
+            main.UpdateMemoryRequest(
+                content="otherwise safe content",
+                metadata={
+                    "subject": {
+                        "credentials": "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+                    }
+                },
+            ),
+            _request("PATCH", "/api/memories/memory-id"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "API 키" in exc_info.value.detail
+
+
+def test_prepare_answer_searches_shared_plus_requesting_users_personal_memories(monkeypatch):
+    all_rows = [
+        {
+            **_memory("shared", scope="shared", creator=BOB_ID, content="공유 운영 정책"),
+            "similarity": 0.94,
         },
-        "created_at": "2026-08-07T01:00:00+00:00",
-        "expires_at": None,
-        "similarity": 0.95,
-    }
+        {
+            **_memory(
+                "alice-private",
+                scope="personal",
+                owner=ALICE_ID,
+                content="앨리스 개인 일정",
+            ),
+            "similarity": 0.92,
+        },
+        {
+            **_memory(
+                "bob-private",
+                scope="personal",
+                owner=BOB_ID,
+                creator=BOB_ID,
+                content="밥 개인 비밀",
+            ),
+            "similarity": 0.99,
+        },
+    ]
 
     class FakeRpc:
+        def __init__(self, rows):
+            self.rows = rows
+
         def execute(self):
-            return _result([hit])
+            return _result(self.rows)
 
-    class FakeSb:
+    class FakeSearchClient:
+        def __init__(self):
+            self.calls = []
+
         def rpc(self, name, params):
-            assert name == "match_memories"
-            assert params["query_embedding"] == [0.1]
-            return FakeRpc()
+            self.calls.append((name, params))
+            user_id = params["requesting_user_id"]
+            visible = [
+                row for row in all_rows
+                if row["scope"] == "shared"
+                or (row["scope"] == "personal" and row["owner_user_id"] == user_id)
+            ]
+            return FakeRpc(visible)
 
-    monkeypatch.setattr(main, "sb", FakeSb())
+    db = FakeSearchClient()
     monkeypatch.setattr(main, "embed", lambda _texts: [[0.1]])
-    monkeypatch.setattr(main, "memory_catalog", lambda: [])
-    monkeypatch.setattr(main, "all_tags", lambda: {})
-    monkeypatch.setattr(main, "contextualize_search_question", lambda question, _history: question)
+    monkeypatch.setattr(main, "memory_catalog", lambda _db, _user_id: [])
+    monkeypatch.setattr(
+        main,
+        "contextualize_search_question",
+        lambda question, _history: question,
+    )
 
     prepared = main.prepare_answer(
         main.AskRequest(
-            question="상세 현황을 알려줘",
+            question="운영 정책과 내 일정을 상세히 알려줘",
             history=[
                 {"role": "user", "content": "이전 질문"},
                 {"role": "assistant", "content": "OLD_HALLUCINATED_ANSWER"},
             ],
-        )
+        ),
+        db,
+        _user(),
     )
 
-    assert all(message["role"] != "assistant" for message in prepared["messages"])
+    assert len(db.calls) == 1
+    name, params = db.calls[0]
+    assert name == "match_memories"
+    assert params == {
+        "query_embedding": [0.1],
+        "match_count": main.TOP_K * 3,
+        "query_scope": "personal",
+        "requesting_user_id": ALICE_ID,
+    }
+    assert {source["id"] for source in prepared["sources"]} == {
+        "shared",
+        "alice-private",
+    }
+    assert "bob-private" not in {source["id"] for source in prepared["sources"]}
     combined = "\n".join(message["content"] for message in prepared["messages"])
+    assert "공유 운영 정책" in combined
+    assert "앨리스 개인 일정" in combined
+    assert "밥 개인 비밀" not in combined
     assert "OLD_HALLUCINATED_ANSWER" not in combined
-    for expected in (
-        "곽진성",
-        "G-core Quick Win",
-        "완료",
-        "2026-08-07",
-        "2026-08-14",
-        "업무",
-        "work",
-    ):
-        assert expected in combined
 
 
 def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
@@ -554,7 +845,16 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
         "resolved_question": "resolved question",
         "sources": [{"id": "memory-1"}],
     }
-    monkeypatch.setattr(main, "prepare_answer", lambda _request: prepared)
+    request_db = object()
+    monkeypatch.setattr(
+        main,
+        "prepare_answer",
+        lambda _request, db, user: (
+            prepared
+            if db is request_db and user["id"] == ALICE_ID
+            else pytest.fail("request-scoped identity was not forwarded")
+        ),
+    )
     monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
 
     chunks = [
@@ -571,14 +871,20 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
             assert kwargs["stream"] is True
             return iter(chunks)
 
-    fake_oai = SimpleNamespace(
-        chat=SimpleNamespace(completions=FakeCompletions())
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions())),
     )
-    monkeypatch.setattr(main, "oai", fake_oai)
 
     response = main.ask_stream(
         main.AskRequest(question="question"),
-        _request("POST", "/api/ask/stream"),
+        _request(
+            "POST",
+            "/api/ask/stream",
+            user=_user(),
+            db=request_db,
+        ),
     )
 
     async def collect():

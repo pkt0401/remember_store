@@ -5,9 +5,7 @@ Memory Agent — 복붙하면 저장, 물어보면 답변.
 접속:  http://localhost:8000
 """
 
-import base64
 import hashlib
-import hmac
 import json
 import logging
 import os
@@ -16,7 +14,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -26,17 +24,19 @@ from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 from pydantic import BaseModel
 from supabase import create_client
+from supabase.client import ClientOptions
+from starlette.concurrency import run_in_threadpool
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"].strip()  # service_role key (로컬 전용)
+SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"].strip()
+SUPABASE_PUBLISHABLE_KEY = (
+    os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
+).strip()
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
-APP_PASSWORD = os.getenv("APP_PASSWORD", "")  # 설정하면 로그인 필수 (배포 시 필수)
-APP_SECRET = os.getenv("APP_SECRET", "")      # 세션 서명용 랜덤 문자열 (배포 시 필수)
-APP_USERS_JSON = os.getenv("APP_USERS_JSON", "").strip()
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 IS_PRODUCTION = APP_ENV in {"production", "prod"} or bool(
     os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RENDER")
@@ -53,120 +53,152 @@ MAX_INGEST_CHARS = int(os.getenv("MAX_INGEST_CHARS", "20000"))
 MAX_CATALOG_ROWS = int(os.getenv("MAX_CATALOG_ROWS", "5000"))
 KST = ZoneInfo("Asia/Seoul")
 
-sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+if not SUPABASE_PUBLISHABLE_KEY:
+    raise RuntimeError(
+        "SUPABASE_PUBLISHABLE_KEY가 필요합니다. Supabase Auth 사용자 JWT와 RLS에 사용됩니다."
+    )
+
+admin_sb = create_client(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_KEY,
+    options=ClientOptions(auto_refresh_token=False, persist_session=False),
+)
 oai = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0, max_retries=2)
 
 app = FastAPI(title="Memory Agent")
 
-_catalog_cache: list[dict] = []
-_catalog_cache_time = 0.0
-_admin_catalog_cache: list[dict] = []
-_admin_catalog_cache_time = 0.0
+_catalog_cache: dict[str, tuple[float, list[dict]]] = {}
+_management_catalog_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 # ---------- auth ----------
-# APP_USERS_JSON이 있으면 사용자별 인증, APP_PASSWORD만 있으면 기존 공용 관리자
-# 인증으로 동작합니다. production에서는 인증 설정 누락 시 시작을 거부합니다.
+# Supabase Auth의 user.id(UUID)를 기억 소유권의 유일한 기준으로 사용합니다.
+# 사용자 JWT는 요청별 Supabase client에만 넣어 동시 요청 간 세션 혼합을 막습니다.
 
 VALID_ROLES = {"viewer", "editor", "admin"}
 ROLE_LEVEL = {"viewer": 1, "editor": 2, "admin": 3}
 OPEN_PATHS = {"/api/login", "/healthz"}
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_ATTEMPTS = 5
+ACCESS_COOKIE = "ma_access_token"
+REFRESH_COOKIE = "ma_refresh_token"
 _login_failures: dict[str, list[float]] = {}
-
-
-def load_app_users(raw: str) -> dict[str, dict]:
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("APP_USERS_JSON이 올바른 JSON이 아닙니다.") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("APP_USERS_JSON은 사용자명을 키로 갖는 객체여야 합니다.")
-
-    users = {}
-    for username, config in parsed.items():
-        normalized = str(username).strip().lower()
-        if not normalized or not isinstance(config, dict):
-            raise RuntimeError("APP_USERS_JSON 사용자 설정을 확인하세요.")
-        role = str(config.get("role") or "viewer").strip().lower()
-        if role not in VALID_ROLES:
-            raise RuntimeError(f"지원하지 않는 사용자 역할입니다: {role}")
-        if not config.get("password") and not config.get("password_hash"):
-            raise RuntimeError(f"{normalized} 사용자에 비밀번호 설정이 없습니다.")
-        users[normalized] = {**config, "role": role}
-    return users
-
-
-APP_USERS = load_app_users(APP_USERS_JSON)
-AUTH_ENABLED = bool(APP_USERS or APP_PASSWORD)
 COOKIE_SECURE = COOKIE_SECURE or IS_PRODUCTION
-if IS_PRODUCTION and not AUTH_ENABLED:
-    raise RuntimeError("production에서는 APP_USERS_JSON 또는 APP_PASSWORD가 필요합니다.")
-if AUTH_ENABLED and len(APP_SECRET) < 16:
-    raise RuntimeError("인증 모드에서는 APP_SECRET을 16자 이상 랜덤 문자열로 설정하세요.")
+AUTH_ENABLED = True
 
 
-def make_password_hash(password: str, iterations: int = 600_000) -> str:
-    salt = os.urandom(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
-    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+def new_supabase_client(*, access_token: Optional[str] = None):
+    headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
+    return create_client(
+        SUPABASE_URL,
+        SUPABASE_PUBLISHABLE_KEY,
+        options=ClientOptions(
+            headers=headers,
+            auto_refresh_token=False,
+            persist_session=False,
+        ),
+    )
 
 
-def verify_password(password: str, config: dict) -> bool:
-    encoded = str(config.get("password_hash") or "")
-    if encoded:
-        try:
-            algorithm, raw_iterations, salt_hex, digest_hex = encoded.split("$", 3)
-            iterations = int(raw_iterations)
-            if algorithm != "pbkdf2_sha256" or not 100_000 <= iterations <= 2_000_000:
-                return False
-            actual = hashlib.pbkdf2_hmac(
-                "sha256", password.encode(), bytes.fromhex(salt_hex), iterations
-            ).hex()
-            return hmac.compare_digest(actual, digest_hex)
-        except (TypeError, ValueError):
-            return False
-    return hmac.compare_digest(password, str(config.get("password") or ""))
-
-
-def _b64encode(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
-
-
-def _b64decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
-def make_session_token(username: str, role: str, *, now: Optional[int] = None) -> str:
-    issued_at = int(time.time() if now is None else now)
-    payload = json.dumps(
-        {"sub": username, "role": role, "iat": issued_at, "exp": issued_at + SESSION_TTL_SECONDS},
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode()
-    encoded = _b64encode(payload)
-    signature = _b64encode(hmac.new(APP_SECRET.encode(), encoded.encode(), hashlib.sha256).digest())
-    return f"{encoded}.{signature}"
-
-
-def verify_session_token(token: str, *, now: Optional[int] = None) -> Optional[dict]:
+def auth_user_identity(auth_user: object) -> dict:
+    raw_id = str(getattr(auth_user, "id", "") or "")
     try:
-        encoded, signature = token.split(".", 1)
-        expected = _b64encode(hmac.new(APP_SECRET.encode(), encoded.encode(), hashlib.sha256).digest())
-        if not hmac.compare_digest(signature, expected):
-            return None
-        claims = json.loads(_b64decode(encoded))
-        current = int(time.time() if now is None else now)
-        if int(claims.get("exp", 0)) <= current or claims.get("role") not in VALID_ROLES:
-            return None
-        if not isinstance(claims.get("sub"), str) or not claims["sub"]:
-            return None
-        return claims
-    except (ValueError, TypeError, json.JSONDecodeError):
+        user_id = str(uuid.UUID(raw_id))
+    except ValueError as exc:
+        raise ValueError("Supabase Auth 사용자 ID가 UUID가 아닙니다.") from exc
+
+    app_metadata = getattr(auth_user, "app_metadata", None)
+    app_metadata = app_metadata if isinstance(app_metadata, dict) else {}
+    # 일반 가입 계정은 자신의 개인기억과 공유기억을 저장할 수 있는 editor입니다.
+    # 읽기 전용 계정이나 관리자는 Supabase app_metadata.app_role로 지정합니다.
+    role = str(app_metadata.get("app_role") or "editor").strip().lower()
+    if role not in VALID_ROLES:
+        role = "viewer"
+    email = str(getattr(auth_user, "email", "") or "").strip().lower()
+    return {
+        "id": user_id,
+        "username": email or user_id,
+        "email": email,
+        "role": role,
+    }
+
+
+def restore_supabase_session(access_token: str, refresh_token: str) -> Optional[dict]:
+    if not access_token and not refresh_token:
         return None
+
+    auth_client = new_supabase_client()
+    refreshed = False
+    session = None
+    auth_user = None
+    if access_token:
+        try:
+            response = auth_client.auth.get_user(access_token)
+            auth_user = response.user if response else None
+        except Exception:
+            auth_user = None
+
+    if not auth_user:
+        if not refresh_token:
+            return None
+        try:
+            refreshed_response = auth_client.auth.refresh_session(refresh_token)
+            session = refreshed_response.session
+            auth_user = refreshed_response.user
+            refreshed = True
+        except Exception:
+            return None
+
+    if not auth_user:
+        return None
+    if session:
+        access_token = session.access_token
+        refresh_token = session.refresh_token
+
+    try:
+        user = auth_user_identity(auth_user)
+    except ValueError:
+        return None
+    return {
+        "user": user,
+        "db": new_supabase_client(access_token=access_token),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": int(getattr(session, "expires_in", 0) or 0),
+        "refreshed": refreshed,
+    }
+
+
+def set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    *,
+    access_max_age: Optional[int] = None,
+) -> None:
+    common = {
+        "httponly": True,
+        "secure": COOKIE_SECURE,
+        "samesite": "strict",
+        "path": "/",
+    }
+    response.set_cookie(
+        ACCESS_COOKIE,
+        access_token,
+        max_age=max(60, access_max_age or 60 * 60),
+        **common,
+    )
+    response.set_cookie(
+        REFRESH_COOKIE,
+        refresh_token,
+        max_age=SESSION_TTL_SECONDS,
+        **common,
+    )
+
+
+def clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(ACCESS_COOKIE, path="/")
+    response.delete_cookie(REFRESH_COOKIE, path="/")
 
 
 def role_allows(role: str, action: str) -> bool:
@@ -175,22 +207,40 @@ def role_allows(role: str, action: str) -> bool:
 
 
 def required_action(method: str, path: str) -> str:
-    if path == "/api/audit-logs" or method == "DELETE":
+    if path in {"/api/audit-logs", "/api/memories/expired"}:
         return "admin"
-    if path == "/api/ingest" or method in {"PATCH", "PUT"}:
+    if path == "/api/ingest" or method in {"PATCH", "PUT", "DELETE"}:
         return "write"
     return "read"
 
 
 def current_user(request: Request) -> dict:
-    return getattr(request.state, "user", {"username": "local", "role": "admin"})
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(401, "로그인이 필요해요.")
+    return user
 
 
-def write_audit(actor: str, role: str, action: str, **details: object) -> None:
+def current_db(request: Request):
+    db = getattr(request.state, "db", None)
+    if db is None:
+        raise HTTPException(401, "사용자 데이터 세션을 확인하지 못했습니다.")
+    return db
+
+
+def write_audit(
+    actor: str,
+    role: str,
+    action: str,
+    *,
+    actor_user_id: Optional[str] = None,
+    **details: object,
+) -> None:
     memory_id = details.pop("memory_id", None)
     try:
-        sb.table("audit_logs").insert({
+        admin_sb.table("audit_logs").insert({
             "actor": actor,
+            "actor_user_id": actor_user_id,
             "role": role,
             "action": action,
             "memory_id": memory_id,
@@ -202,7 +252,24 @@ def write_audit(actor: str, role: str, action: str, **details: object) -> None:
 
 def needs_security_migration(exc: Exception) -> bool:
     message = str(exc).lower()
-    return any(name in message for name in ("content_hash", "updated_at", "audit_logs"))
+    return any(
+        name in message
+        for name in (
+            "content_hash",
+            "updated_at",
+            "audit_logs",
+            "actor_user_id",
+            "owner_user_id",
+            "created_by_user_id",
+            "query_scope",
+        )
+    )
+
+
+MEMORY_MIGRATION_MESSAGE = (
+    "Supabase에서 migration_security.sql 실행 후 "
+    "migration_memory_scopes.sql을 실행하세요."
+)
 
 
 def add_security_headers(response: Response) -> Response:
@@ -218,30 +285,66 @@ def add_security_headers(response: Response) -> Response:
     return response
 
 
+def add_api_security_headers(response: Response) -> Response:
+    existing = response.headers.get("Cache-Control", "").lower()
+    no_transform = ", no-transform" if "no-transform" in existing else ""
+    response.headers["Cache-Control"] = f"private, no-store{no_transform}"
+    return add_security_headers(response)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if not AUTH_ENABLED:
-        request.state.user = {"username": "local", "role": "admin"}
-        return add_security_headers(await call_next(request))
     if path.startswith("/api/") and path not in OPEN_PATHS:
-        claims = verify_session_token(request.cookies.get("ma_session", ""))
-        if claims and APP_USERS:
-            configured = APP_USERS.get(claims["sub"])
-            if not configured or configured["role"] != claims["role"]:
-                claims = None
-        if not claims:
-            return add_security_headers(
-                JSONResponse({"detail": "로그인이 필요해요."}, status_code=401)
-            )
-        request.state.user = {"username": claims["sub"], "role": claims["role"]}
+        restored = await run_in_threadpool(
+            restore_supabase_session,
+            request.cookies.get(ACCESS_COOKIE, ""),
+            request.cookies.get(REFRESH_COOKIE, ""),
+        )
+        if not restored:
+            unauthorized = JSONResponse({"detail": "로그인이 필요해요."}, status_code=401)
+            clear_auth_cookies(unauthorized)
+            return add_api_security_headers(unauthorized)
+        request.state.user = restored["user"]
+        request.state.db = restored["db"]
+        request.state.auth_tokens = {
+            "access_token": restored["access_token"],
+            "refresh_token": restored["refresh_token"],
+        }
         action = required_action(request.method, path)
-        if not role_allows(claims["role"], action):
-            write_audit(claims["sub"], claims["role"], "access_denied", path=path, method=request.method)
-            return add_security_headers(
-                JSONResponse({"detail": "이 작업을 수행할 권한이 없습니다."}, status_code=403)
+        if not role_allows(restored["user"]["role"], action):
+            write_audit(
+                restored["user"]["username"],
+                restored["user"]["role"],
+                "access_denied",
+                actor_user_id=restored["user"]["id"],
+                path=path,
+                method=request.method,
             )
-    return add_security_headers(await call_next(request))
+            forbidden = JSONResponse(
+                {"detail": "이 작업을 수행할 권한이 없습니다."}, status_code=403
+            )
+            if restored["refreshed"]:
+                set_auth_cookies(
+                    forbidden,
+                    restored["access_token"],
+                    restored["refresh_token"],
+                    access_max_age=restored["expires_in"],
+                )
+            return add_api_security_headers(forbidden)
+        response = await call_next(request)
+        if restored["refreshed"]:
+            set_auth_cookies(
+                response,
+                restored["access_token"],
+                restored["refresh_token"],
+                access_max_age=restored["expires_in"],
+            )
+        return add_api_security_headers(response)
+    response = await call_next(request)
+    if path.startswith("/api/"):
+        return add_api_security_headers(response)
+    return add_security_headers(response)
 
 
 class LoginRequest(BaseModel):
@@ -258,47 +361,59 @@ def login_attempts(ip: str) -> list[float]:
 
 @app.post("/api/login")
 def login(req: LoginRequest, request: Request, response: Response):
-    if not AUTH_ENABLED:
-        return {"ok": True, "user": {"username": "local", "role": "admin"}}
-
     ip = request.client.host if request.client else "unknown"
     if len(login_attempts(ip)) >= LOGIN_MAX_ATTEMPTS:
         raise HTTPException(429, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.")
 
-    username = req.username.strip().lower()
-    if APP_USERS:
-        config = APP_USERS.get(username)
-        valid = bool(config) and verify_password(req.password, config)
-        role = str((config or {}).get("role") or "viewer")
-    else:
-        username = "admin"
-        valid = hmac.compare_digest(req.password, APP_PASSWORD)
-        role = "admin"
+    email = req.username.strip().lower()
+    try:
+        auth_response = new_supabase_client().auth.sign_in_with_password({
+            "email": email,
+            "password": req.password,
+        })
+        session = auth_response.session
+        user = auth_user_identity(auth_response.user) if auth_response.user else None
+    except Exception:
+        session = None
+        user = None
 
-    if not valid:
+    if not session or not user:
         _login_failures.setdefault(ip, []).append(time.monotonic())
-        write_audit(username[:100] or "unknown", "unknown", "login_failed", ip=ip)
-        raise HTTPException(401, "사용자명 또는 비밀번호가 맞지 않아요.")
+        write_audit(email[:100] or "unknown", "unknown", "login_failed", ip=ip)
+        raise HTTPException(401, "이메일 또는 비밀번호가 맞지 않아요.")
 
     _login_failures.pop(ip, None)
-    token = make_session_token(username, role)
-    response.set_cookie(
-        "ma_session",
-        token,
-        max_age=SESSION_TTL_SECONDS,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite="strict",
+    set_auth_cookies(
+        response,
+        session.access_token,
+        session.refresh_token,
+        access_max_age=int(session.expires_in or 0),
     )
-    write_audit(username, role, "login", ip=ip)
-    return {"ok": True, "user": {"username": username, "role": role}}
+    write_audit(
+        user["username"], user["role"], "login",
+        actor_user_id=user["id"], ip=ip,
+    )
+    return {"ok": True, "user": user}
 
 
 @app.post("/api/logout")
 def logout(request: Request, response: Response):
     user = current_user(request)
-    response.delete_cookie("ma_session")
-    write_audit(user["username"], user["role"], "logout")
+    try:
+        tokens = getattr(request.state, "auth_tokens", {})
+        auth_client = new_supabase_client()
+        auth_client.auth.set_session(
+            tokens.get("access_token", request.cookies.get(ACCESS_COOKIE, "")),
+            tokens.get("refresh_token", request.cookies.get(REFRESH_COOKIE, "")),
+        )
+        auth_client.auth.sign_out()
+    except Exception:
+        logger.info("Supabase session revoke failed during logout")
+    clear_auth_cookies(response)
+    write_audit(
+        user["username"], user["role"], "logout",
+        actor_user_id=user["id"],
+    )
     return {"ok": True}
 
 
@@ -324,6 +439,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 class IngestRequest(BaseModel):
     text: str
+    scope: Literal["shared", "personal"] = "personal"
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -339,6 +455,13 @@ class AskRequest(BaseModel):
 # ---------- helpers ----------
 
 VALID_SOURCES = {"slack", "email", "note"}
+OPENAI_API_KEY_PATTERN = re.compile(
+    r"(?:^|[^A-Za-z0-9_-])(sk-[A-Za-z0-9_-]{20,})(?=$|[^A-Za-z0-9_-])"
+)
+
+
+def contains_openai_api_key(value: str) -> bool:
+    return bool(OPENAI_API_KEY_PATTERN.search(value))
 
 
 def normalize_source(value: object) -> str:
@@ -355,66 +478,55 @@ def embed(texts: list[str]) -> list[list[float]]:
 
 
 def invalidate_catalog_cache() -> None:
-    global _catalog_cache_time, _admin_catalog_cache_time
-    _catalog_cache_time = 0.0
-    _admin_catalog_cache_time = 0.0
+    _catalog_cache.clear()
+    _management_catalog_cache.clear()
 
 
-def memory_catalog() -> list[dict]:
-    global _catalog_cache, _catalog_cache_time
+def visible_memories_query(query, user_id: str):
+    normalized_user_id = str(uuid.UUID(user_id))
+    return query.or_(
+        "scope.eq.shared,"
+        f"and(scope.eq.personal,owner_user_id.eq.{normalized_user_id})"
+    )
+
+
+def _load_memory_catalog(db, user_id: str, *, include_expired: bool) -> list[dict]:
+    cache = _management_catalog_cache if include_expired else _catalog_cache
     cache_now = time.monotonic()
-    if _catalog_cache_time and cache_now - _catalog_cache_time < CATALOG_CACHE_TTL:
-        return _catalog_cache
+    cached = cache.get(user_id)
+    if cached and cache_now - cached[0] < CATALOG_CACHE_TTL:
+        return cached[1]
+
     rows = []
     page_size = 500
     for offset in range(0, MAX_CATALOG_ROWS, page_size):
-        page = (
-            sb.table("memories")
-            .select("id,source,content,metadata,created_at,expires_at")
+        query = (
+            db.table("memories")
+            .select(
+                "id,source,content,metadata,created_at,expires_at,"
+                "scope,owner_user_id,created_by_user_id"
+            )
             .order("created_at", desc=True)
             .order("id", desc=True)
             .range(offset, offset + page_size - 1)
-            .execute()
-            .data
-            or []
         )
+        page = visible_memories_query(query, user_id).execute().data or []
         rows.extend(page)
         if len(page) < page_size:
             break
-    rows = [row for row in rows if not memory_is_expired(row)]
-    _catalog_cache = rows
-    _catalog_cache_time = cache_now
+    if not include_expired:
+        rows = [row for row in rows if not memory_is_expired(row)]
+    cache[user_id] = (cache_now, rows)
     return rows
 
 
-def all_memory_catalog() -> list[dict]:
-    """Return cached rows including expired records for the management view."""
-    global _admin_catalog_cache, _admin_catalog_cache_time
-    cache_now = time.monotonic()
-    if (
-        _admin_catalog_cache_time
-        and cache_now - _admin_catalog_cache_time < CATALOG_CACHE_TTL
-    ):
-        return _admin_catalog_cache
-    rows = []
-    page_size = 500
-    for offset in range(0, MAX_CATALOG_ROWS, page_size):
-        page = (
-            sb.table("memories")
-            .select("id,source,content,metadata,created_at,expires_at")
-            .order("created_at", desc=True)
-            .order("id", desc=True)
-            .range(offset, offset + page_size - 1)
-            .execute()
-            .data
-            or []
-        )
-        rows.extend(page)
-        if len(page) < page_size:
-            break
-    _admin_catalog_cache = rows
-    _admin_catalog_cache_time = cache_now
-    return rows
+def memory_catalog(db, user_id: str) -> list[dict]:
+    return _load_memory_catalog(db, user_id, include_expired=False)
+
+
+def all_memory_catalog(db, user_id: str) -> list[dict]:
+    """Return accessible cached rows including expired records for management."""
+    return _load_memory_catalog(db, user_id, include_expired=True)
 
 
 def memory_is_expired(item: dict, now: Optional[datetime] = None) -> bool:
@@ -767,6 +879,17 @@ def ingest(req: IngestRequest, request: Request):
         raise HTTPException(400, "빈 텍스트입니다.")
     if len(text) > MAX_INGEST_CHARS:
         raise HTTPException(413, f"한 번에 저장할 수 있는 최대 길이는 {MAX_INGEST_CHARS:,}자입니다.")
+    if contains_openai_api_key(text):
+        raise HTTPException(
+            400,
+            "OpenAI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다. "
+            "서버 환경변수 OPENAI_API_KEY에만 보관하세요.",
+        )
+
+    user = current_user(request)
+    db = current_db(request)
+    scope = req.scope
+    owner_user_id = user["id"] if scope == "personal" else None
 
     try:
         parsed = parse_pasted_text(text)
@@ -790,16 +913,22 @@ def ingest(req: IngestRequest, request: Request):
         raise HTTPException(502, "AI 임베딩 생성에 실패했습니다. 서버 로그를 확인하세요.")
 
     rows = []
+    saved = 0
+    skipped = 0
     try:
         hashes = [record["content_hash"] for record in records]
-        existing = (
-            sb.table("memories")
+        existing_query = (
+            db.table("memories")
             .select("content_hash")
+            .eq("scope", scope)
             .in_("content_hash", hashes)
-            .execute()
-            .data
-            or []
         )
+        existing_query = (
+            existing_query.eq("owner_user_id", owner_user_id)
+            if owner_user_id
+            else existing_query.is_("owner_user_id", "null")
+        )
+        existing = existing_query.execute().data or []
         existing_hashes = {row.get("content_hash") for row in existing}
         updated_at = datetime.now(timezone.utc).isoformat()
         for r, v in zip(records, vectors):
@@ -813,34 +942,51 @@ def ingest(req: IngestRequest, request: Request):
                 "metadata": meta,
                 "embedding": v,
                 "expires_at": r.get("expires_at") or None,
+                "scope": scope,
+                "owner_user_id": owner_user_id,
+                "created_by_user_id": user["id"],
                 "updated_at": updated_at,
             })
 
-        sb.table("memories").upsert(rows, on_conflict="content_hash").execute()
+        new_rows = [row for row in rows if row["content_hash"] not in existing_hashes]
+        if new_rows:
+            inserted = (
+                db.table("memories")
+                .upsert(
+                    new_rows,
+                    on_conflict="scope,owner_user_id,content_hash",
+                    ignore_duplicates=True,
+                )
+                .execute()
+            )
+            saved = len(inserted.data or [])
+        skipped = len(rows) - saved
         invalidate_catalog_cache()
     except Exception as exc:
         logger.exception("Failed to write memories to Supabase")
         if needs_security_migration(exc):
-            raise HTTPException(503, "Supabase에서 migration_security.sql을 먼저 실행하세요.")
+            raise HTTPException(503, MEMORY_MIGRATION_MESSAGE)
         raise HTTPException(502, "기억 저장소 연결 또는 저장에 실패했습니다. 서버 로그를 확인하세요.")
 
-    user = current_user(request)
     write_audit(
         user["username"], user["role"], "memory_ingest",
-        batch_id=batch_id, source=source, saved=len(rows), updated=len(existing_hashes),
+        actor_user_id=user["id"],
+        batch_id=batch_id, source=source, scope=scope, saved=saved, skipped=skipped,
     )
     return {
         "source": source,
-        "saved": len(rows),
-        "replaced": len(existing_hashes),
+        "scope": scope,
+        "saved": saved,
+        "replaced": 0,
+        "skipped": skipped,
         "batch_id": batch_id,
         "preview": [r["content"][:80] for r in records[:3]],
     }
 
 
-def all_tags() -> dict[str, int]:
+def all_tags(rows: list[dict]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for row in memory_catalog():
+    for row in rows:
         for t in (row.get("metadata") or {}).get("tags") or []:
             if isinstance(t, str) and t.strip():
                 counts[t] = counts.get(t, 0) + 1
@@ -848,15 +994,16 @@ def all_tags() -> dict[str, int]:
 
 
 @app.get("/api/tags")
-def get_tags():
-    counts = all_tags()
+def get_tags(request: Request):
+    user = current_user(request)
+    counts = all_tags(memory_catalog(current_db(request), user["id"]))
     return sorted(
         [{"tag": t, "count": c} for t, c in counts.items()],
         key=lambda x: -x["count"],
     )
 
 
-def prepare_answer(req: AskRequest) -> dict:
+def prepare_answer(req: AskRequest, db, user: dict) -> dict:
     question = req.question.strip()
     if not question:
         raise HTTPException(400, "질문이 비어 있습니다.")
@@ -864,7 +1011,7 @@ def prepare_answer(req: AskRequest) -> dict:
         raise HTTPException(413, "질문은 2,000자 이내로 입력하세요.")
 
     search_question = contextualize_search_question(question, req.history)
-    catalog = memory_catalog()
+    catalog = memory_catalog(db, user["id"])
 
     # 사람 이름처럼 짧고 고유한 검색어는 임베딩 유사도가 낮을 수 있으므로
     # 정확 일치가 있으면 외부 임베딩 호출 없이 해당 인물 자료만 사용한다.
@@ -899,9 +1046,11 @@ def prepare_answer(req: AskRequest) -> dict:
             hits = lexical_hits
         else:
             qvec = embed([search_question])[0]
-            res = sb.rpc("match_memories", {
+            res = db.rpc("match_memories", {
                 "query_embedding": qvec,
                 "match_count": TOP_K * 3,
+                "query_scope": "personal",
+                "requesting_user_id": user["id"],
             }).execute()
             vector_hits = [
                 hit for hit in (res.data or [])
@@ -927,7 +1076,7 @@ def prepare_answer(req: AskRequest) -> dict:
 
     # 질문에 등장하는 알려진 태그 → 해당 태그 가진 기억에 가산점
     q_lower = search_question.lower()
-    matched_tags = {t for t in all_tags() if t.lower() in q_lower}
+    matched_tags = {t for t in all_tags(catalog) if t.lower() in q_lower}
     if matched_tags:
         for h in hits:
             tags = set((h.get("metadata") or {}).get("tags") or [])
@@ -946,7 +1095,10 @@ def prepare_answer(req: AskRequest) -> dict:
 
     def describe(h: dict) -> str:
         meta = effective_metadata(h)
-        parts = [f"유형={normalize_source(h.get('source'))}"]
+        parts = [
+            f"범위={'개인' if h.get('scope') == 'personal' else '공유'}",
+            f"유형={normalize_source(h.get('source'))}",
+        ]
         labels = {
             "person": "담당자", "project": "프로젝트", "status": "상태",
             "work_date": "업무일", "due_date": "마감일", "category": "카테고리",
@@ -988,6 +1140,7 @@ def prepare_answer(req: AskRequest) -> dict:
             {
                 "id": h["id"],
                 "source": normalize_source(h.get("source")),
+                "scope": "personal" if h.get("scope") == "personal" else "shared",
                 "metadata": h["metadata"],
                 "similarity": round(h["similarity"], 3),
                 "snippet": h["content"][:120],
@@ -1000,7 +1153,8 @@ def prepare_answer(req: AskRequest) -> dict:
 
 @app.post("/api/ask")
 def ask(req: AskRequest, request: Request):
-    prepared = prepare_answer(req)
+    user = current_user(request)
+    prepared = prepare_answer(req, current_db(request), user)
     answer = prepared["fallback"]
     if answer is None:
         resp = oai.chat.completions.create(
@@ -1010,9 +1164,9 @@ def ask(req: AskRequest, request: Request):
         )
         answer = resp.choices[0].message.content or ""
 
-    user = current_user(request)
     write_audit(
         user["username"], user["role"], "memory_ask",
+        actor_user_id=user["id"],
         source_count=len(prepared["sources"]), streaming=False,
     )
     return {
@@ -1028,10 +1182,11 @@ def stream_event(event_type: str, **payload: object) -> str:
 
 @app.post("/api/ask/stream")
 def ask_stream(req: AskRequest, request: Request):
-    prepared = prepare_answer(req)
     user = current_user(request)
+    prepared = prepare_answer(req, current_db(request), user)
     write_audit(
         user["username"], user["role"], "memory_ask",
+        actor_user_id=user["id"],
         source_count=len(prepared["sources"]), streaming=True,
     )
 
@@ -1077,8 +1232,23 @@ def ask_stream(req: AskRequest, request: Request):
     )
 
 
+def memory_can_modify(item: dict, user: dict) -> bool:
+    if not role_allows(user.get("role", ""), "write"):
+        return False
+    if item.get("scope") == "personal":
+        return item.get("owner_user_id") == user.get("id")
+    return (
+        item.get("scope") in {None, "shared"}
+        and (
+            user.get("role") == "admin"
+            or item.get("created_by_user_id") == user.get("id")
+        )
+    )
+
+
 @app.get("/api/memories")
 def list_memories(
+    request: Request,
     response: Response,
     limit: int = 100,
     offset: int = 0,
@@ -1089,6 +1259,8 @@ def list_memories(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ):
+    user = current_user(request)
+    db = current_db(request)
     page_limit = min(max(limit, 1), 200)
     page_offset = max(offset, 0)
     if section and section not in SECTION_TYPES:
@@ -1102,7 +1274,7 @@ def list_memories(
         # Older rows may only have sender/tags, so filter their effective metadata
         # until migration_security.sql backfills all normalized fields.
         filtered = []
-        for raw_item in all_memory_catalog():
+        for raw_item in all_memory_catalog(db, user["id"]):
             meta = effective_metadata(raw_item)
             work_date = iso_date(meta.get("work_date")) or raw_item["created_at"][:10]
             if person and meta.get("person") != person:
@@ -1133,14 +1305,18 @@ def list_memories(
         items = filtered[page_offset:page_offset + page_limit]
         response.headers["X-Total-Count"] = str(len(filtered))
     else:
-        res = (
-            sb.table("memories")
-            .select("id,source,content,metadata,created_at,expires_at", count="exact")
+        query = (
+            db.table("memories")
+            .select(
+                "id,source,content,metadata,created_at,expires_at,scope,"
+                "owner_user_id,created_by_user_id",
+                count="exact",
+            )
             .order("created_at", desc=True)
             .order("id", desc=True)
             .range(page_offset, page_offset + page_limit - 1)
-            .execute()
         )
+        res = visible_memories_query(query, user["id"]).execute()
         raw_items = res.data or []
         response.headers["X-Total-Count"] = str(
             res.count if res.count is not None else len(raw_items)
@@ -1161,12 +1337,21 @@ def list_memories(
         ),
         reverse=True,
     )
-    return items
+    return [
+        {
+            **item,
+            "scope": "personal" if item.get("scope") == "personal" else "shared",
+            "can_edit": memory_can_modify(item, user),
+            "can_delete": memory_can_modify(item, user),
+        }
+        for item in items
+    ]
 
 
 @app.get("/api/memory-filters")
-def memory_filters():
-    rows = memory_catalog()
+def memory_filters(request: Request):
+    user = current_user(request)
+    rows = memory_catalog(current_db(request), user["id"])
 
     def values(key: str, fallback: Optional[str] = None) -> list[str]:
         result = set()
@@ -1187,11 +1372,28 @@ def memory_filters():
 @app.delete("/api/memories/expired")
 def delete_expired(request: Request):
     now = datetime.now(timezone.utc).isoformat()
-    res = sb.table("memories").delete().lt("expires_at", now).execute()
-    invalidate_catalog_cache()
-    deleted = len(res.data or [])
     user = current_user(request)
-    write_audit(user["username"], user["role"], "memory_expired_delete", deleted=deleted)
+    shared_result = (
+        admin_sb.table("memories")
+        .delete()
+        .eq("scope", "shared")
+        .lt("expires_at", now)
+        .execute()
+    )
+    personal_result = (
+        current_db(request).table("memories")
+        .delete()
+        .eq("scope", "personal")
+        .eq("owner_user_id", user["id"])
+        .lt("expires_at", now)
+        .execute()
+    )
+    invalidate_catalog_cache()
+    deleted = len(shared_result.data or []) + len(personal_result.data or [])
+    write_audit(
+        user["username"], user["role"], "memory_expired_delete",
+        actor_user_id=user["id"], deleted=deleted,
+    )
     return {"deleted": deleted}
 
 
@@ -1202,16 +1404,29 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
         raise HTTPException(400, "본문은 비워둘 수 없습니다.")
     if len(content) > 8000:
         raise HTTPException(413, "기억 본문은 8,000자 이내로 수정하세요.")
+    metadata_text = json.dumps(req.metadata or {}, ensure_ascii=False, default=str)
+    if contains_openai_api_key(content) or contains_openai_api_key(metadata_text):
+        raise HTTPException(
+            400,
+            "OpenAI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다.",
+        )
 
-    existing = (
-        sb.table("memories")
-        .select("id,source,content,metadata,created_at,expires_at")
+    user = current_user(request)
+    db = current_db(request)
+
+    existing_query = (
+        db.table("memories")
+        .select(
+            "id,source,content,metadata,created_at,expires_at,scope,"
+            "owner_user_id,created_by_user_id"
+        )
         .eq("id", memory_id)
         .limit(1)
-        .execute()
-        .data
     )
+    existing = visible_memories_query(existing_query, user["id"]).execute().data
     if not existing:
+        raise HTTPException(404, "수정할 기억을 찾지 못했습니다.")
+    if not memory_can_modify(existing[0], user):
         raise HTTPException(404, "수정할 기억을 찾지 못했습니다.")
 
     editable_keys = {
@@ -1235,8 +1450,13 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
         vector = embed([content])[0]
         source = normalize_source(existing[0].get("source"))
         content_hash = hashlib.sha256(f"{source}\0{content}".encode()).hexdigest()
-        result = (
-            sb.table("memories")
+        write_db = (
+            admin_sb
+            if user["role"] == "admin" and existing[0].get("scope") == "shared"
+            else db
+        )
+        update_query = (
+            write_db.table("memories")
             .update({
                 "content": content,
                 "content_hash": content_hash,
@@ -1245,30 +1465,64 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
             .eq("id", memory_id)
-            .execute()
         )
+        if existing[0].get("scope") == "personal":
+            update_query = update_query.eq("owner_user_id", user["id"])
+        else:
+            update_query = update_query.eq("scope", "shared")
+        result = update_query.execute()
+        if not result.data:
+            raise HTTPException(404, "수정할 기억을 찾지 못했습니다.")
         invalidate_catalog_cache()
     except Exception as exc:
         logger.exception("Failed to update memory")
-        if "duplicate" in str(exc).lower() or "memories_content_hash_uidx" in str(exc):
+        if isinstance(exc, HTTPException):
+            raise
+        if "duplicate" in str(exc).lower() or "memories_scope_owner_content_hash_uidx" in str(exc):
             raise HTTPException(409, "같은 내용의 기억이 이미 저장되어 있습니다.")
         if needs_security_migration(exc):
-            raise HTTPException(503, "Supabase에서 migration_security.sql을 먼저 실행하세요.")
+            raise HTTPException(503, MEMORY_MIGRATION_MESSAGE)
         raise HTTPException(502, "기억 수정에 실패했습니다. 서버 로그를 확인하세요.")
 
-    user = current_user(request)
-    write_audit(user["username"], user["role"], "memory_update", memory_id=memory_id)
+    write_audit(
+        user["username"], user["role"], "memory_update",
+        actor_user_id=user["id"], memory_id=memory_id,
+    )
     return (result.data or [{"id": memory_id, "content": content, "metadata": meta}])[0]
 
 
 @app.delete("/api/memories/{memory_id}")
 def delete_memory(memory_id: str, request: Request):
-    result = sb.table("memories").delete().eq("id", memory_id).execute()
+    user = current_user(request)
+    db = current_db(request)
+    existing_query = (
+        db.table("memories")
+        .select("id,scope,owner_user_id,created_by_user_id")
+        .eq("id", memory_id)
+        .limit(1)
+    )
+    existing = visible_memories_query(existing_query, user["id"]).execute().data or []
+    if not existing or not memory_can_modify(existing[0], user):
+        raise HTTPException(404, "삭제할 기억을 찾지 못했습니다.")
+
+    write_db = (
+        admin_sb
+        if user["role"] == "admin" and existing[0].get("scope") == "shared"
+        else db
+    )
+    delete_query = write_db.table("memories").delete().eq("id", memory_id)
+    if existing[0].get("scope") == "personal":
+        delete_query = delete_query.eq("owner_user_id", user["id"])
+    else:
+        delete_query = delete_query.eq("scope", "shared")
+    result = delete_query.execute()
     if not result.data:
         raise HTTPException(404, "삭제할 기억을 찾지 못했습니다.")
     invalidate_catalog_cache()
-    user = current_user(request)
-    write_audit(user["username"], user["role"], "memory_delete", memory_id=memory_id)
+    write_audit(
+        user["username"], user["role"], "memory_delete",
+        actor_user_id=user["id"], memory_id=memory_id,
+    )
     return {"deleted": memory_id}
 
 
@@ -1277,8 +1531,8 @@ def audit_logs(limit: int = 100):
     page_limit = min(max(limit, 1), 500)
     try:
         result = (
-            sb.table("audit_logs")
-            .select("id,actor,role,action,memory_id,details,created_at")
+            admin_sb.table("audit_logs")
+            .select("id,actor,actor_user_id,role,action,memory_id,details,created_at")
             .order("created_at", desc=True)
             .limit(page_limit)
             .execute()
@@ -1286,7 +1540,7 @@ def audit_logs(limit: int = 100):
     except Exception as exc:
         logger.exception("Failed to read audit logs")
         if needs_security_migration(exc):
-            raise HTTPException(503, "Supabase에서 migration_security.sql을 먼저 실행하세요.")
+            raise HTTPException(503, MEMORY_MIGRATION_MESSAGE)
         raise HTTPException(502, "감사 로그를 불러오지 못했습니다.")
     return result.data or []
 

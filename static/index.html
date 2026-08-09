@@ -86,6 +86,19 @@
     color: var(--ink); background: transparent; outline: none;
   }
   textarea::placeholder { color: #A6B0AC; }
+  .scope-row {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px;
+    align-items: center; padding: 10px 18px; border-top: 1px solid var(--line);
+    background: #FAFBFA;
+  }
+  .scope-picker { display: flex; gap: 6px; padding: 0; border: 0; }
+  .scope-picker label {
+    display: flex; align-items: center; gap: 5px; cursor: pointer;
+    color: var(--ink); font-size: 12px; font-weight: 600;
+  }
+  .scope-picker label + label { margin-left: 4px; }
+  .scope-picker input { margin: 0; accent-color: var(--pine); }
+  .scope-help { color: var(--ink-soft); font-size: 11px; line-height: 1.45; }
   .ingest-foot {
     display: flex; justify-content: space-between; align-items: center;
     padding: 12px 18px; border-top: 1px solid var(--line);
@@ -122,6 +135,10 @@
   .mem button:hover { color: #8C3B2E; }
   .mem-actions { display: flex; flex-direction: column; gap: 3px; }
   .mem-actions button.edit:hover { color: var(--pine); }
+  .mem-labels {
+    display: flex; flex: 0 0 auto; flex-direction: column;
+    align-items: flex-start; gap: 4px;
+  }
   .chip {
     font-family: var(--mono); font-size: 10.5px; font-weight: 600;
     padding: 3px 8px; border-radius: 5px; white-space: nowrap; margin-top: 1px;
@@ -129,6 +146,12 @@
   .chip.slack { background: var(--slate-soft); color: var(--slate); }
   .chip.email { background: var(--amber-soft); color: var(--amber); }
   .chip.note  { background: var(--pine-soft); color: var(--pine); }
+  .scope-badge {
+    font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+  }
+  .scope-badge.personal { background: var(--amber-soft); color: var(--amber); }
+  .scope-badge.shared { background: var(--pine-soft); color: var(--pine); }
   .mem.expired .txt { color: #A6B0AC; }
   .badge-exp {
     font-family: var(--mono); font-size: 10px; font-weight: 700;
@@ -356,6 +379,9 @@
     .session-info { margin-left: auto; }
     #chat { height: auto; min-height: 420px; }
   }
+  @media (max-width: 430px) {
+    .scope-row { grid-template-columns: 1fr; gap: 6px; }
+  }
   @media (prefers-reduced-motion: no-preference) {
     .msg { animation: rise .18s ease-out; }
     @keyframes rise { from { transform: translateY(4px); opacity: 0; } }
@@ -369,8 +395,8 @@
   <form class="login-card" id="loginForm">
     <h2 id="loginTitle">기억 서랍</h2>
     <p>계정으로 로그인하면 열려요</p>
-    <label class="sr-only" for="usernameBox">아이디 또는 이메일</label>
-    <input type="text" id="usernameBox" name="username" placeholder="아이디 또는 이메일" autocomplete="username" required>
+    <label class="sr-only" for="usernameBox">이메일</label>
+    <input type="email" id="usernameBox" name="username" placeholder="이메일" autocomplete="username" required>
     <label class="sr-only" for="pwBox">비밀번호</label>
     <input type="password" id="pwBox" name="password" placeholder="비밀번호" autocomplete="current-password" required>
     <button type="submit" id="loginBtn">열기</button>
@@ -395,6 +421,14 @@
       <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
       <textarea id="pasteBox" placeholder="Slack 스레드, 메일 본문, 또는 그냥 메모를 여기에 붙여넣기&#10;&#10;예)&#10;김철수  오후 2:31&#10;다음주 배포는 수요일로 확정입니다&#10;박영희  오후 2:33&#10;스테이징 검증은 화요일까지 완료할게요"></textarea>
       <div id="saveResult" role="status" aria-live="polite"></div>
+      <div class="scope-row">
+        <fieldset class="scope-picker" aria-describedby="memoryScopeHelp">
+          <legend class="sr-only">기억 저장 범위</legend>
+          <label for="memoryScopePersonal"><input id="memoryScopePersonal" name="memoryScope" type="radio" value="personal" checked>개인기억</label>
+          <label for="memoryScopeShared"><input id="memoryScopeShared" name="memoryScope" type="radio" value="shared">모두의 기억</label>
+        </fieldset>
+        <p class="scope-help" id="memoryScopeHelp">개인기억은 나만, 모두의 기억은 모든 계정이 함께 볼 수 있어요.</p>
+      </div>
       <div class="ingest-foot">
         <span class="hint">Ctrl/⌘ + Enter로 저장</span>
         <button class="save" id="saveBtn" onclick="ingest()">저장하기</button>
@@ -503,6 +537,17 @@ function sourceLabel(value) {
   return chipName[sourceKey(value)];
 }
 
+function selectedMemoryScope() {
+  const selected = document.querySelector('input[name="memoryScope"]:checked');
+  return selected && selected.value === "shared" ? "shared" : "personal";
+}
+
+function memoryScopeInfo(value) {
+  return value === "personal"
+    ? { key: "personal", label: "개인" }
+    : { key: "shared", label: "공유" };
+}
+
 function canWrite() {
   return currentSession && ["admin", "editor"].includes(currentSession.role);
 }
@@ -525,13 +570,14 @@ async function ingest() {
   if (!canWrite()) return;
   const text = $("pasteBox").value.trim();
   if (!text) return;
+  const scope = selectedMemoryScope();
   const btn = $("saveBtn");
   btn.disabled = true; btn.textContent = "저장 중…";
   showSaveResult("");
   try {
     const r = await apiFetch("/api/ingest", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, scope })
     });
     const contentType = r.headers.get("content-type") || "";
     const d = contentType.includes("application/json")
@@ -539,9 +585,10 @@ async function ingest() {
       : { detail: await r.text() || `서버 오류 (${r.status})` };
     if (!r.ok) throw new Error(d.detail || "저장 실패");
     showSaveResult(
-      `${sourceLabel(d.source)}로 인식 · ${Number(d.saved) || 0}개 조각으로 저장했어요${d.replaced ? ` (기존 ${Number(d.replaced) || 0}건 갱신)` : ""}`
+      `${scope === "personal" ? "개인기억" : "모두의 기억"} · ${sourceLabel(d.source)}로 인식 · ${Number(d.saved) || 0}개 조각으로 저장했어요${d.skipped ? ` (중복 ${Number(d.skipped) || 0}건 건너뜀)` : ""}`
     );
     $("pasteBox").value = "";
+    $("memoryScopePersonal").checked = true;
     filtersLoaded = false;
     loadRecent();
   } catch (e) {
@@ -673,12 +720,16 @@ async function loadRecentUnsafe() {
         <small>${escapeHtml(who)}${project}${who || project ? " · " : ""}${savedDate} 저장${statusHtml}${badge}${tagHtml}</small></div>`;
     const memoryId = escapeHtml(m.id);
     const actions = [
-      canWrite() ? `<button type="button" class="edit" title="수정" aria-label="기억 수정" data-memory-action="edit" data-memory-id="${memoryId}">✎</button>` : "",
-      isAdmin() ? `<button type="button" title="삭제" aria-label="기억 삭제" data-memory-action="delete" data-memory-id="${memoryId}">×</button>` : "",
+      m.can_edit ? `<button type="button" class="edit" title="수정" aria-label="기억 수정" data-memory-action="edit" data-memory-id="${memoryId}">✎</button>` : "",
+      m.can_delete ? `<button type="button" title="삭제" aria-label="기억 삭제" data-memory-action="delete" data-memory-id="${memoryId}">×</button>` : "",
     ].filter(Boolean).join("");
     const source = sourceKey(m.source);
+    const scope = memoryScopeInfo(m.scope);
     return `${dateHeader}<div class="mem${isExpired ? " expired" : ""}">
-      <span class="chip ${source}">${escapeHtml(sourceLabel(source))}</span>
+      <div class="mem-labels">
+        <span class="chip ${source}">${escapeHtml(sourceLabel(source))}</span>
+        <span class="scope-badge ${scope.key}" aria-label="기억 범위: ${scope.label}">${scope.label}</span>
+      </div>
       ${body}
       ${actions ? `<div class="mem-actions">${actions}</div>` : ""}
     </div>`;
@@ -692,8 +743,9 @@ $("memList").addEventListener("click", event => {
   const button = event.target.closest("[data-memory-action]");
   if (!button || !$("memList").contains(button)) return;
   const id = button.dataset.memoryId;
-  if (button.dataset.memoryAction === "edit" && canWrite()) openEdit(id);
-  if (button.dataset.memoryAction === "delete" && isAdmin()) del(id);
+  const memory = memoryById.get(id);
+  if (button.dataset.memoryAction === "edit" && memory && memory.can_edit) openEdit(id);
+  if (button.dataset.memoryAction === "delete" && memory && memory.can_delete) del(id);
 });
 
 async function loadRecent() {
@@ -768,7 +820,8 @@ async function cleanExpired() {
 
 async function del(id) {
   try {
-    if (!isAdmin()) return;
+    const memory = memoryById.get(id);
+    if (!memory || !memory.can_delete) return;
     if (!confirm("이 기억을 삭제할까요?")) return;
     const response = await apiFetch(`/api/memories/${id}`, { method: "DELETE" });
     if (!response.ok) {
@@ -1147,7 +1200,7 @@ async function doLogin() {
     });
     if (!r.ok) {
       const raw = await r.text();
-      let detail = "사용자명 또는 비밀번호가 맞지 않아요.";
+      let detail = "이메일 또는 비밀번호가 맞지 않아요.";
       try { detail = JSON.parse(raw).detail || detail; } catch (_) {}
       throw new Error(detail);
     }
@@ -1169,15 +1222,19 @@ async function doLogin() {
 function applySession(data) {
   const user = data && data.user || {};
   const role = allowedRoles.has(user.role) ? user.role : "viewer";
-  currentSession = { username: String(user.username || "사용자"), role };
+  currentSession = {
+    id: String(user.id || ""),
+    username: String(user.username || user.email || "사용자"),
+    role,
+  };
   const chatOwner = localStorage.getItem(CHAT_OWNER_KEY);
-  if (chatOwner !== currentSession.username) {
+  if (!currentSession.id || chatOwner !== currentSession.id) {
     localStorage.removeItem(CHAT_STORAGE_KEY);
     chatHistory = [];
     chatRendered = false;
     resetChatView();
   }
-  localStorage.setItem(CHAT_OWNER_KEY, currentSession.username);
+  localStorage.setItem(CHAT_OWNER_KEY, currentSession.id);
   const roleNames = { admin: "관리자", editor: "편집자", viewer: "조회자" };
   $("sessionUser").textContent = currentSession.username;
   $("sessionRole").textContent = roleNames[role];

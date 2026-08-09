@@ -16,12 +16,14 @@ Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저
 - `harness.md` 기반 답변 근거·업무 보고 형식 관리
 - 제목, 상태 강조, 불릿과 링크를 지원하는 안전한 제한 Markdown 렌더링
 - `오늘`, `어제`, `이번 주`, `지난주`, `이번 달` 기반 날짜 검색
-- 동일 본문 SHA-256 기반 원자적 갱신, 선삭제 없는 중복 처리, 만료 기억 정리
+- 기억 공간별 SHA-256 중복 처리와 만료 기억 정리
 - 저장된 본문과 담당자·프로젝트·상태·날짜·유형·태그 수정 및 재임베딩
 - 답변 근거 원문 조회
 - OpenAI 응답을 실시간으로 표시하는 스트리밍 채팅
 - 브라우저 `localStorage` 기반 대화 이력 복원 및 전체 삭제
 - 사용자별 `viewer`·`editor`·`admin` 권한, 만료 세션, 로그아웃, 감사 로그
+- 모든 계정이 보는 공유 기억과 계정 UUID별 개인기억 분리
+- OpenAI API 키 형태의 입력 차단과 기존 키 포함 기억 격리
 
 ## 처리 구조
 
@@ -33,7 +35,7 @@ Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저
 
 질문
   -> 문맥 의존 후속 질문만 독립 검색문으로 재작성
-  -> 이름·날짜 정확 검색 + 벡터 유사도 검색
+  -> 공유 기억 + 현재 계정의 개인기억에서 이름·날짜·벡터 검색
   -> 태그 리랭킹
   -> OpenAI 스트리밍 답변 생성
   -> 생성되는 답변과 근거 원문 표시
@@ -59,13 +61,21 @@ Redis를 추가하는 것이 적절합니다.
 Supabase SQL Editor에서 설치 상태에 맞는 SQL을 실행합니다.
 
 - 신규 프로젝트: `schema.sql`
-- 기존 프로젝트: `migration_security.sql`
+- 기존 프로젝트: `migration_security.sql` 실행 후 `migration_memory_scopes.sql`
 - `migration_expiry.sql`은 과거 설치용 유통기한 마이그레이션이며,
   `migration_security.sql`에 해당 변경이 포함되어 있습니다.
 
-보안 마이그레이션은 `memories`와 `audit_logs`에 RLS를 적용하고 `anon`,
-`authenticated`, `PUBLIC`의 테이블/RPC 권한을 회수합니다. 백엔드는
-`SUPABASE_SERVICE_KEY`를 서버 환경변수로만 사용해야 하며 브라우저에 노출하면 안 됩니다.
+`migration_memory_scopes.sql`은 기존 기억을 공유 기억으로 전환하고, 실제 OpenAI
+API 키 형태가 포함된 행은 일반 기억에서 제거합니다. 키 원문·본문 해시·임베딩은
+영구 폐기하며, `quarantined_memories`에는 키를 마스킹한 감사용 사본만 남습니다.
+실행 후 앱을 재시작해 기존 메모리 캐시를 비웁니다. 격리된 키가 실제 사용 중인
+키였다면 OpenAI 대시보드에서 폐기하고 새 키로 교체하세요.
+
+Supabase Auth에서 이메일/비밀번호 로그인을 활성화하고 사용자를 생성합니다. Auth의
+불변 `user.id` UUID가 개인기억 소유권으로 사용됩니다. 신규 사용자는 기본 `editor`로
+동작하며, 읽기 전용 또는 관리자 계정은 Auth 사용자의 `app_metadata.app_role`을
+각각 `viewer` 또는 `admin`으로 설정합니다. 기존 `APP_USERS_JSON`의 계정과 비밀번호
+해시는 Supabase Auth로 자동 이전되지 않으므로 사용자를 새로 만들거나 초대해야 합니다.
 
 ## 환경변수
 
@@ -74,6 +84,7 @@ Supabase SQL Editor에서 설치 상태에 맞는 SQL을 실행합니다.
 ```dotenv
 OPENAI_API_KEY=your-openai-api-key
 SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
 SUPABASE_SERVICE_KEY=your-supabase-service-role-key
 
 # 검색·처리 설정
@@ -86,10 +97,8 @@ MAX_CONTEXT_CHARS=12000
 MAX_CATALOG_ROWS=5000
 MAX_INGEST_CHARS=20000
 
-# 사용자별 인증
+# Supabase Auth 세션
 APP_ENV=development
-APP_SECRET=replace-with-a-random-secret-at-least-16-characters
-APP_USERS_JSON='{"admin":{"password":"change-me","role":"admin"},"member":{"password":"change-me-too","role":"editor"}}'
 SESSION_TTL_SECONDS=43200
 COOKIE_SECURE=false
 ```
@@ -97,19 +106,11 @@ COOKIE_SECURE=false
 역할별 권한은 다음과 같습니다.
 
 - `viewer`: 기억 조회와 질문
-- `editor`: `viewer` 권한 + 기억 저장과 수정
-- `admin`: 전체 권한 + 삭제, 만료 정리, 감사 로그 조회
+- `editor`: `viewer` 권한 + 기억 저장, 자신이 소유·생성한 기억 수정·삭제
+- `admin`: 공유 기억 전체 관리 + 만료 정리, 감사 로그 조회
 
-`APP_USERS_JSON`의 `password` 대신 `password_hash`에
-`pbkdf2_sha256$반복횟수$salt$hash` 값을 넣을 수 있습니다. 기존 단일 비밀번호
-설정인 `APP_PASSWORD`도 호환되며 로그인 사용자명은 `admin`, 권한도 `admin`으로
-기록됩니다. 운영 환경에서는 평문 `password`보다 `password_hash` 사용을 권장합니다.
-
-```bash
-python scripts/hash_password.py
-```
-
-출력된 전체 값을 해당 사용자의 `password_hash`에 넣습니다.
+모든 질문은 공유 기억과 현재 로그인 UUID의 개인기억을 함께 검색합니다. 다른 계정의
+개인기억은 목록, 필터, 태그, 벡터 검색 및 답변 원문에 포함되지 않습니다.
 
 Windows에서 편집한 `.env`를 WSL에서 `source`할 경우 CRLF가 환경변수에 포함될 수
 있습니다. 다음 명령으로 줄바꿈을 정리할 수 있습니다.
@@ -235,34 +236,31 @@ fuser -k 8000/tcp
 
 ## 배포
 
-로컬 개발에서는 인증 설정이 비어 있으면 `local/admin`으로 동작합니다. Railway와
-Render 또는 `APP_ENV=production` 환경에서는 `APP_USERS_JSON`이나 `APP_PASSWORD`가
-없으면 서버가 시작되지 않습니다. 운영 환경에서는 반드시 사용자별 계정과 16자
-이상의 `APP_SECRET`을 설정합니다.
-
-```bash
-python -c "import secrets; print(secrets.token_hex(24))"
-```
+로컬과 운영 환경 모두 Supabase Auth 로그인이 필요합니다. 사용자 데이터 요청은
+publishable key와 요청별 사용자 JWT로 실행해 RLS를 적용하고, service key는 감사
+로그와 명시적인 관리자 작업에만 사용합니다.
 
 Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연결하고 다음 값을
 환경변수로 등록합니다.
 
 - `OPENAI_API_KEY`
 - `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SERVICE_KEY`
 - `APP_ENV=production`
-- `APP_USERS_JSON`
-- `APP_SECRET`
 
 배포 후 `/healthz`가 `{"status":"ok"}`를 반환하는지 확인합니다.
 
 ## 보안 주의사항
 
 - `.env`는 Git에 커밋하지 않습니다.
-- API 키가 로그나 대화에 노출되면 즉시 폐기하고 새로 발급합니다.
+- `OPENAI_API_KEY`와 RLS를 우회하는 `SUPABASE_SERVICE_KEY`는 모두 서버 전용
+  비밀입니다. 브라우저·공유 기억·Git에 넣지 않습니다. 클라이언트에 공개할 수 있는
+  값은 `SUPABASE_PUBLISHABLE_KEY`뿐입니다.
+- 비밀 키가 로그나 대화에 노출되면 즉시 폐기하고 새로 발급합니다.
 - 저장 내용과 질문은 처리 과정에서 OpenAI와 Supabase로 전송됩니다.
-- API 키나 비밀번호를 기억으로 저장할 수 있지만 외부 API로 전송된다는 점을
-  이해한 경우에만 사용해야 합니다.
-- Supabase 테이블과 검색 RPC는 `service_role`만 접근할 수 있도록 제한되어 있습니다.
-  사용자 인증·권한 검사는 FastAPI에서 수행하고 모든 변경은 `audit_logs`에 기록합니다.
+- OpenAI API 키 형태는 기억 저장 전에 차단됩니다. 다른 비밀번호도 개인기억으로만
+  저장하고, 저장 내용이 처리 과정에서 OpenAI와 Supabase로 전송된다는 점을 확인하세요.
+- 기억 테이블과 검색 RPC는 사용자 JWT의 `auth.uid()`를 이용한 RLS와 FastAPI의
+  범위 필터를 함께 적용합니다. `SUPABASE_SERVICE_KEY`는 브라우저에 노출하지 않습니다.
 - 응답에는 CSP, 프레임 차단, MIME 스니핑 차단 등 기본 브라우저 보안 헤더가 적용됩니다.
