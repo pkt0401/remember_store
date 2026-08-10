@@ -3,6 +3,24 @@
 
 begin;
 
+-- 과거의 BEFORE INSERT 가드는 GoTrue가 auth.users 행을 만드는 시점에
+-- 호출 경로를 안정적으로 구분할 수 없어 정상 signUp까지 차단했습니다.
+-- auth.users 소유권이나 다른 종속 객체를 건드리지 않고 함수만 중립화합니다.
+create or replace function public.require_managed_auth_signup()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  return new;
+end;
+$$;
+
+alter function public.require_managed_auth_signup() owner to postgres;
+revoke all on function public.require_managed_auth_signup()
+  from public, anon, authenticated;
+
 -- Supabase Auth의 불변 UUID를 애플리케이션 로그인 ID와 연결합니다.
 -- email은 로그인 해석에만 쓰는 비공개 값이며 RLS로 본인과 service_role 외에는
 -- 읽을 수 없습니다. username은 소문자로 정규화되고 대소문자를 구분하지 않습니다.
@@ -19,6 +37,10 @@ create table if not exists public.account_profiles (
     ),
   constraint account_profiles_username_key unique (username)
 );
+
+-- CREATE TABLE IF NOT EXISTS는 기존 owner를 바꾸지 않으므로, SECURITY
+-- DEFINER 함수가 FORCE RLS를 우회할 수 있는 Supabase postgres로 복구합니다.
+alter table public.account_profiles owner to postgres;
 
 comment on table public.account_profiles is
   'Private mapping from an application username to a Supabase Auth UUID.';
@@ -73,6 +95,9 @@ begin
   return new;
 end;
 $$;
+
+-- CREATE OR REPLACE FUNCTION도 기존 owner를 보존하므로 명시적으로 복구합니다.
+alter function public.validate_account_profile() owner to postgres;
 
 drop trigger if exists account_profiles_validate on public.account_profiles;
 create trigger account_profiles_validate
@@ -146,8 +171,11 @@ begin
 end;
 $$;
 
-drop trigger if exists on_auth_user_created_account_profile on auth.users;
-create trigger on_auth_user_created_account_profile
+alter function public.handle_new_auth_user_account_profile() owner to postgres;
+
+-- postgres는 auth.users에 TRIGGER 권한은 있지만 relation owner가 아닐 수
+-- 있으므로 DROP TRIGGER 대신 기존 트리거를 제자리에서 교체합니다.
+create or replace trigger on_auth_user_created_account_profile
 after insert on auth.users
 for each row execute function public.handle_new_auth_user_account_profile();
 
@@ -167,8 +195,9 @@ begin
 end;
 $$;
 
-drop trigger if exists auth_users_sync_account_profile_email on auth.users;
-create trigger auth_users_sync_account_profile_email
+alter function public.sync_auth_user_account_profile_email() owner to postgres;
+
+create or replace trigger auth_users_sync_account_profile_email
 after update of email on auth.users
 for each row
 when (old.email is distinct from new.email)
@@ -201,8 +230,9 @@ begin
 end;
 $$;
 
-drop trigger if exists auth_users_protect_admin_profile_role on auth.users;
-create trigger auth_users_protect_admin_profile_role
+alter function public.protect_admin_account_profile_role() owner to postgres;
+
+create or replace trigger auth_users_protect_admin_profile_role
 before update of raw_app_meta_data on auth.users
 for each row execute function public.protect_admin_account_profile_role();
 

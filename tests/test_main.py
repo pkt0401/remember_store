@@ -3,10 +3,12 @@ import json
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import supabase
 from fastapi import HTTPException
 from pydantic import ValidationError
 from starlette.requests import Request
@@ -97,6 +99,7 @@ class _MemoryQuery:
         self.in_filters = []
         self.null_filters = []
         self.visibility_user_id = None
+        self.published_shared_only = False
         self.range_bounds = None
         self.limit_count = None
         self.want_count = False
@@ -145,6 +148,7 @@ class _MemoryQuery:
 
     def or_(self, expression):
         self.client.visibility_expressions.append(expression)
+        self.published_shared_only = "publication_status.eq.published" in expression
         match = re.search(r"owner_user_id\.eq\.([0-9a-fA-F-]{36})", expression)
         if match:
             self.visibility_user_id = match.group(1)
@@ -166,14 +170,22 @@ class _MemoryQuery:
         return self
 
     def _matches(self, row):
-        if self.visibility_user_id is not None and not (
-            row.get("scope") in {None, "shared"}
-            or (
+        if self.visibility_user_id is not None:
+            shared_visible = row.get("scope") in {None, "shared"}
+            if self.published_shared_only:
+                shared_visible = shared_visible and (
+                    row.get("publication_status", "published") == "published"
+                )
+            personal_visible = (
                 row.get("scope") == "personal"
                 and row.get("owner_user_id") == self.visibility_user_id
+                and (
+                    not self.published_shared_only
+                    or row.get("publication_status", "published") == "published"
+                )
             )
-        ):
-            return False
+            if not (shared_visible or personal_visible):
+                return False
         if any(row.get(column) != value for column, value in self.equal_filters):
             return False
         if any(row.get(column) not in values for column, values in self.in_filters):
@@ -268,7 +280,16 @@ class _ProfileClient:
         return _ProfileQuery(self)
 
 
-def _memory(memory_id, *, scope="shared", owner=None, creator=ALICE_ID, content=None):
+def _memory(
+    memory_id,
+    *,
+    scope="shared",
+    owner=None,
+    creator=ALICE_ID,
+    content=None,
+    publication_status="published",
+    proposal_id=None,
+):
     return {
         "id": memory_id,
         "source": "note",
@@ -280,6 +301,13 @@ def _memory(memory_id, *, scope="shared", owner=None, creator=ALICE_ID, content=
         "scope": scope,
         "owner_user_id": owner,
         "created_by_user_id": creator,
+        "publication_status": publication_status,
+        "proposal_id": proposal_id,
+        "approved_at": (
+            "2026-08-09T01:00:00+00:00"
+            if publication_status == "published"
+            else None
+        ),
     }
 
 
@@ -468,6 +496,123 @@ def test_signup_sets_session_cookies_when_email_confirmation_is_disabled(monkeyp
     assert any(f"{main.REFRESH_COOKIE}=signup-refresh-token" in value for value in cookies)
 
 
+@pytest.mark.parametrize(
+    ("error_code", "upstream_status", "expected_status", "expected_detail"),
+    [
+        ("email_exists", 422, 409, "이미 가입된 이메일"),
+        ("user_already_exists", 422, 409, "이미 가입된 이메일"),
+        ("weak_password", 422, 400, "비밀번호가 보안 정책"),
+        ("email_address_invalid", 400, 400, "사용할 수 없는 이메일 주소"),
+        ("email_address_not_authorized", 400, 400, "사용할 수 없는 이메일 주소"),
+        ("over_request_rate_limit", 429, 429, "잠시 후 다시 시도"),
+        ("over_email_send_rate_limit", 429, 429, "잠시 후 다시 시도"),
+    ],
+)
+def test_signup_maps_supabase_auth_errors_to_specific_user_messages(
+    monkeypatch,
+    error_code,
+    upstream_status,
+    expected_status,
+    expected_detail,
+):
+    class FakeSignupError(Exception):
+        def __init__(self):
+            super().__init__("upstream auth error")
+            self.message = "upstream auth error"
+            self.code = error_code
+            self.status = upstream_status
+
+    class FakeAuth:
+        def sign_up(self, _payload):
+            raise FakeSignupError()
+
+    monkeypatch.setattr(main, "account_profile_by_username", lambda _username: None)
+    monkeypatch.setattr(
+        main,
+        "new_supabase_client",
+        lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.signup(
+            main.SignupRequest(
+                username="alice",
+                email="alice@example.com",
+                password="correct horse battery staple",
+            ),
+            _request("POST", "/api/signup"),
+            Response(),
+        )
+
+    assert raised.value.status_code == expected_status
+    assert expected_detail in raised.value.detail
+
+
+def test_signup_error_mapper_supports_real_supabase_email_exists_error():
+    exc = supabase.AuthApiError(
+        "User already registered",
+        422,
+        "email_exists",
+    )
+
+    mapped = main.signup_http_exception(exc)
+
+    assert mapped.status_code == 409
+    assert "이미 가입된 이메일" in mapped.detail
+
+
+def test_signup_error_mapper_supports_real_supabase_weak_password_error():
+    exc = supabase.AuthWeakPasswordError(
+        "Password should be at least 8 characters",
+        422,
+        ["length"],
+    )
+
+    mapped = main.signup_http_exception(exc)
+
+    assert mapped.status_code == 400
+    assert "비밀번호가 보안 정책" in mapped.detail
+
+
+def test_signup_error_mapper_supports_legacy_error_attributes():
+    class LegacyAuthError(Exception):
+        error_code = "email_exists"
+        status_code = 422
+
+    mapped = main.signup_http_exception(LegacyAuthError("upstream auth error"))
+
+    assert mapped.status_code == 409
+    assert "이미 가입된 이메일" in mapped.detail
+
+
+def test_signup_error_mapper_distinguishes_database_and_unknown_server_errors():
+    class UnknownServerError(Exception):
+        status = 500
+
+    database_error = main.signup_http_exception(
+        RuntimeError("Database error saving new user")
+    )
+    unknown_server_error = main.signup_http_exception(
+        UnknownServerError("upstream internal error")
+    )
+
+    assert database_error.status_code == 503
+    assert "데이터베이스 설정 오류" in database_error.detail
+    assert unknown_server_error.status_code == 503
+    assert "서비스에 일시적인 오류" in unknown_server_error.detail
+    assert database_error.detail != unknown_server_error.detail
+
+
+def test_signup_error_mapper_maps_status_only_rate_limit():
+    class StatusOnlyError(Exception):
+        status = 429
+
+    mapped = main.signup_http_exception(StatusOnlyError("upstream auth error"))
+
+    assert mapped.status_code == 429
+    assert "잠시 후 다시 시도" in mapped.detail
+
+
 def test_login_resolves_username_to_profile_email_and_admin_role(monkeypatch):
     profiles = _ProfileClient({"admin": "admin@example.com"})
     auth_user = SimpleNamespace(
@@ -522,56 +667,45 @@ def test_login_resolves_username_to_profile_email_and_admin_role(monkeypatch):
     assert result["user"]["role"] == "admin"
 
 
-def test_login_accepts_email_without_profile_lookup(monkeypatch):
+def test_login_rejects_email_without_profile_lookup(monkeypatch):
     profiles = _ProfileClient({"alice": "alice@example.com"})
-    auth_user = SimpleNamespace(
-        id=ALICE_ID,
-        email="alice@example.com",
-        user_metadata={"username": "alice"},
-        app_metadata={},
-    )
-    session = SimpleNamespace(
-        access_token="access-token",
-        refresh_token="refresh-token",
-        expires_in=1800,
-    )
     login_payloads = []
+    audits = []
 
     class FakeAuth:
         def sign_in_with_password(self, payload):
             login_payloads.append(payload)
-            return SimpleNamespace(user=auth_user, session=session)
+            raise RuntimeError("invalid credentials")
 
     monkeypatch.setattr(main, "admin_sb", profiles)
-    monkeypatch.setattr(
-        main,
-        "account_profile_by_user_id",
-        lambda user_id: {
-            "id": user_id,
-            "username": "alice",
-            "email": "alice@example.com",
-        },
-    )
     monkeypatch.setattr(
         main,
         "new_supabase_client",
         lambda **_kwargs: SimpleNamespace(auth=FakeAuth()),
     )
-    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *args, **kwargs: audits.append((args, kwargs)),
+    )
     monkeypatch.setattr(main, "_login_failures", {})
 
-    result = main.login(
-        main.LoginRequest(username=" Alice@Example.COM ", password="password"),
-        _request("POST", "/api/login"),
-        Response(),
-    )
+    with pytest.raises(HTTPException) as raised:
+        main.login(
+            main.LoginRequest(username=" Alice@Example.COM ", password="password"),
+            _request("POST", "/api/login"),
+            Response(),
+        )
 
     assert profiles.lookups == []
     assert login_payloads == [{
-        "email": "alice@example.com",
+        "email": "missing-account@invalid.local",
         "password": "password",
     }]
-    assert result["user"]["username"] == "alice"
+    assert raised.value.status_code == 401
+    assert raised.value.detail == "아이디 또는 비밀번호가 맞지 않아요."
+    assert audits[-1][0][2] == "login_failed"
+    assert audits[-1][1]["attempted_identifier_kind"] == "invalid"
 
 
 def test_login_reloads_username_from_authenticated_uuid(monkeypatch):
@@ -829,7 +963,88 @@ def test_auth_middleware_blocks_viewer_write(monkeypatch):
     _assert_security_headers(response)
 
 
-def test_auth_middleware_rejects_missing_or_invalid_supabase_session(monkeypatch):
+@pytest.mark.parametrize("role", ["viewer", "editor"])
+def test_auth_architecture_page_rejects_non_admin_roles(monkeypatch, role):
+    monkeypatch.setattr(
+        main,
+        "restore_supabase_session",
+        lambda *_args: {
+            "user": _user(role=role),
+            "db": object(),
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+            "refreshed": False,
+        },
+    )
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    async def call_next(_request):
+        pytest.fail("non-admin must not reach the protected page route")
+
+    response = asyncio.run(
+        main.auth_middleware(_request("GET", "/auth-architecture"), call_next)
+    )
+
+    assert response.status_code == 403
+    _assert_private_no_store(response)
+    _assert_security_headers(response)
+
+
+def test_auth_architecture_page_allows_admin(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "restore_supabase_session",
+        lambda *_args: {
+            "user": _user(role="admin"),
+            "db": object(),
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+            "refreshed": False,
+        },
+    )
+
+    async def call_next(request):
+        assert request.state.user["role"] == "admin"
+        return JSONResponse({"ok": True})
+
+    response = asyncio.run(
+        main.auth_middleware(_request("GET", "/auth-architecture"), call_next)
+    )
+
+    assert response.status_code == 200
+    _assert_private_no_store(response)
+    _assert_security_headers(response)
+
+
+def test_auth_architecture_route_revalidates_admin_role():
+    assert main.required_action("GET", "/auth-architecture") == "admin"
+    with pytest.raises(HTTPException) as raised:
+        main.auth_architecture(
+            _request("GET", "/auth-architecture", user=_user(role="editor"))
+        )
+    assert raised.value.status_code == 403
+
+
+def test_auth_architecture_link_is_hidden_unless_session_is_admin():
+    html = (
+        Path(__file__).resolve().parents[1] / "static" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert re.search(
+        r'<a class="architecture-button role-hidden" id="architectureBtn"',
+        html,
+    )
+    assert '$("architectureBtn").classList.toggle("role-hidden", !isAdmin())' in html
+    assert '$("architectureBtn").classList.add("role-hidden")' in html
+
+
+@pytest.mark.parametrize("path", ["/api/memories", "/auth-architecture"])
+def test_auth_middleware_rejects_missing_or_invalid_supabase_session(
+    monkeypatch,
+    path,
+):
     monkeypatch.setattr(main, "restore_supabase_session", lambda *_args: None)
     called = False
 
@@ -839,7 +1054,7 @@ def test_auth_middleware_rejects_missing_or_invalid_supabase_session(monkeypatch
         return JSONResponse({"ok": True})
 
     response = asyncio.run(
-        main.auth_middleware(_request("GET", "/api/memories"), call_next)
+        main.auth_middleware(_request("GET", path), call_next)
     )
 
     assert response.status_code == 401
@@ -937,13 +1152,9 @@ def test_normalize_parsed_payload_chunks_long_fallback():
     assert all(record["tags"] == [] for record in payload["records"])
 
 
-@pytest.mark.parametrize(
-    ("scope", "expected_owner"),
-    [("personal", ALICE_ID), ("shared", None)],
-)
-def test_ingest_sets_scope_owner_creator_and_space_scoped_conflict_key(
-    monkeypatch, scope, expected_owner
-):
+def test_personal_ingest_sets_owner_creator_and_published_state(monkeypatch):
+    scope = "personal"
+    expected_owner = ALICE_ID
     db = _MemoryClient()
     monkeypatch.setattr(
         main,
@@ -959,6 +1170,7 @@ def test_ingest_sets_scope_owner_creator_and_space_scoped_conflict_key(
         },
     )
     monkeypatch.setattr(main, "embed", lambda texts: [[0.1] for _ in texts])
+    monkeypatch.setattr(main, "consume_ai_use", lambda user_id: 9)
     monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "_catalog_cache", {ALICE_ID: (1.0, [{"id": "stale"}])})
     monkeypatch.setattr(main, "_management_catalog_cache", {ALICE_ID: (1.0, [])})
@@ -971,6 +1183,9 @@ def test_ingest_sets_scope_owner_creator_and_space_scoped_conflict_key(
     assert result["scope"] == scope
     assert result["saved"] == 1
     assert result["skipped"] == 0
+    assert result["status"] == "published"
+    assert result["proposal_id"] is None
+    assert result["remaining_uses"] == 9
     assert len(db.upserts) == 1
     upsert = db.upserts[0]
     assert upsert["on_conflict"] == "scope,owner_user_id,content_hash"
@@ -979,8 +1194,684 @@ def test_ingest_sets_scope_owner_creator_and_space_scoped_conflict_key(
     assert row["scope"] == scope
     assert row["owner_user_id"] == expected_owner
     assert row["created_by_user_id"] == ALICE_ID
+    assert row["publication_status"] == "published"
+    assert row["proposal_id"] is None
+    assert row["approved_at"]
     assert main._catalog_cache == {}
     assert main._management_catalog_cache == {}
+
+
+def test_shared_ingest_by_regular_user_creates_pending_proposal_with_author_vote(
+    monkeypatch,
+):
+    request_db = _MemoryClient()
+
+    class ProposalClient(_MemoryClient):
+        def __init__(self):
+            super().__init__()
+            self.rpc_calls = []
+
+        def rpc(self, name, params):
+            self.rpc_calls.append((name, params))
+            return SimpleNamespace(
+                execute=lambda: _result([{
+                    "proposal_id": params["requested_proposal_id"],
+                    "inserted_count": 1,
+                }])
+            )
+
+    service_db = ProposalClient()
+    monkeypatch.setattr(main, "admin_sb", service_db)
+    monkeypatch.setattr(
+        main,
+        "parse_pasted_text",
+        lambda _text: {
+            "source": "note",
+            "records": [{
+                "content": "팀 전체에 공유할 운영 정보",
+                "metadata": {"status": "참고"},
+                "tags": ["운영"],
+                "expires_at": None,
+            }],
+        },
+    )
+    monkeypatch.setattr(main, "embed", lambda _texts: [[0.1]])
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    result = main.ingest(
+        main.IngestRequest(text="팀 전체에 공유할 운영 정보", scope="shared"),
+        _request("POST", "/api/ingest", user=_user(), db=request_db),
+    )
+
+    assert result["status"] == "pending"
+    assert result["published"] is False
+    assert result["approval_count"] == 1
+    assert result["required_approvals"] == 2
+    assert result["proposal_id"]
+    assert request_db.upserts == []
+    assert len(service_db.rpc_calls) == 1
+    name, params = service_db.rpc_calls[0]
+    assert name == "create_shared_memory_proposal"
+    assert params["creator_user_id"] == ALICE_ID
+    assert params["requested_proposal_id"] == result["proposal_id"]
+    assert len(params["proposal_records"]) == 1
+    pending_row = params["proposal_records"][0]
+    assert pending_row["scope"] == "shared"
+    assert pending_row["owner_user_id"] is None
+    assert pending_row["publication_status"] == "pending"
+    assert pending_row["proposal_id"] == result["proposal_id"]
+    assert pending_row["approved_at"] is None
+
+
+def test_shared_ingest_by_admin_is_published_without_a_proposal(monkeypatch):
+    db = _MemoryClient()
+    monkeypatch.setattr(main, "admin_sb", db)
+    monkeypatch.setattr(
+        main,
+        "parse_pasted_text",
+        lambda _text: {
+            "source": "note",
+            "records": [{
+                "content": "관리자가 바로 공개하는 팀 정보",
+                "metadata": {"status": "참고"},
+                "tags": [],
+                "expires_at": None,
+            }],
+        },
+    )
+    monkeypatch.setattr(main, "embed", lambda _texts: [[0.2]])
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    result = main.ingest(
+        main.IngestRequest(text="관리자가 바로 공개하는 팀 정보", scope="shared"),
+        _request(
+            "POST",
+            "/api/ingest",
+            user=_user(role="admin"),
+            db=db,
+        ),
+    )
+
+    assert result["status"] == "published"
+    assert result["published"] is True
+    assert result["proposal_id"] is None
+    assert result["approval_count"] == 2
+    assert len(db.upserts) == 1
+    row = db.upserts[0]["rows"][0]
+    assert row["scope"] == "shared"
+    assert row["publication_status"] == "published"
+    assert row["approved_at"]
+
+
+@pytest.mark.parametrize(
+    ("user_id", "proposal_status", "approval_count", "published"),
+    [
+        (ALICE_ID, "pending", 1, False),
+        (BOB_ID, "published", 2, True),
+    ],
+)
+def test_resaving_pending_shared_content_is_idempotent_for_author_and_approves_for_other_user(
+    monkeypatch,
+    user_id,
+    proposal_status,
+    approval_count,
+    published,
+):
+    proposal_id = "33333333-3333-4333-8333-333333333333"
+    content = "두 명의 동의가 필요한 팀 정보"
+    pending = _memory(
+        "pending-memory",
+        scope="shared",
+        creator=ALICE_ID,
+        content=content,
+        publication_status="pending",
+        proposal_id=proposal_id,
+    )
+    pending["content_hash"] = main.hashlib.sha256(
+        f"note\0{content}".encode()
+    ).hexdigest()
+    service_db = _MemoryClient([pending])
+    request_db = _RpcClient({
+        "approve_shared_memory_proposal": [{
+            "proposal_id": proposal_id,
+            "proposal_status": proposal_status,
+            "approval_count": approval_count,
+            "required_approvals": 2,
+            "published": published,
+        }],
+    })
+    monkeypatch.setattr(main, "admin_sb", service_db)
+    monkeypatch.setattr(
+        main,
+        "parse_pasted_text",
+        lambda _text: {
+            "source": "note",
+            "records": [{
+                "content": content,
+                "metadata": {"status": "참고"},
+                "tags": [],
+                "expires_at": None,
+            }],
+        },
+    )
+    monkeypatch.setattr(main, "embed", lambda _texts: [[0.3]])
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "invalidate_catalog_cache", lambda: None)
+
+    result = main.ingest(
+        main.IngestRequest(text=content, scope="shared"),
+        _request(
+            "POST",
+            "/api/ingest",
+            user=_user(user_id),
+            db=request_db,
+        ),
+    )
+
+    assert request_db.calls == [(
+        "approve_shared_memory_proposal",
+        {"target_proposal_id": proposal_id},
+    )]
+    assert result["saved"] == 0
+    assert result["skipped"] == 1
+    assert result["proposal_id"] == proposal_id
+    assert result["status"] == proposal_status
+    assert result["published"] is published
+    assert result["approval_count"] == approval_count
+    assert result["required_approvals"] == 2
+
+
+def test_partial_create_collision_approves_other_proposal_but_not_own(monkeypatch):
+    own_proposal_id = "33333333-3333-4333-8333-333333333333"
+    other_proposal_id = "44444444-4444-4444-8444-444444444444"
+    contents = ["새로 제안되는 내용", "동시에 다른 제안에 들어간 내용"]
+    hashes = [
+        main.hashlib.sha256(f"note\0{content}".encode()).hexdigest()
+        for content in contents
+    ]
+
+    class PartialCollisionClient(_MemoryClient):
+        def __init__(self):
+            super().__init__()
+            self.rpc_calls = []
+
+        def rpc(self, name, params):
+            self.rpc_calls.append((name, params))
+
+            def execute():
+                requested_id = params["requested_proposal_id"]
+                self.rows = [
+                    {
+                        **_memory(
+                            "own-pending",
+                            creator=BOB_ID,
+                            content=contents[0],
+                            publication_status="pending",
+                            proposal_id=requested_id,
+                        ),
+                        "content_hash": hashes[0],
+                    },
+                    {
+                        **_memory(
+                            "other-pending",
+                            creator=ALICE_ID,
+                            content=contents[1],
+                            publication_status="pending",
+                            proposal_id=other_proposal_id,
+                        ),
+                        "content_hash": hashes[1],
+                    },
+                ]
+                return _result([{
+                    "proposal_id": requested_id,
+                    "inserted_count": 1,
+                }])
+
+            return SimpleNamespace(execute=execute)
+
+    service_db = PartialCollisionClient()
+    request_db = _RpcClient({
+        "approve_shared_memory_proposal": [{
+            "proposal_id": other_proposal_id,
+            "proposal_status": "published",
+            "approval_count": 2,
+            "required_approvals": 2,
+            "published": True,
+        }],
+    })
+    monkeypatch.setattr(main, "admin_sb", service_db)
+    monkeypatch.setattr(
+        main,
+        "uuid",
+        SimpleNamespace(
+            uuid4=lambda: uuid.UUID(own_proposal_id),
+            UUID=uuid.UUID,
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "parse_pasted_text",
+        lambda _text: {
+            "source": "note",
+            "records": [
+                {
+                    "content": content,
+                    "metadata": {"status": "참고"},
+                    "tags": [],
+                    "expires_at": None,
+                }
+                for content in contents
+            ],
+        },
+    )
+    monkeypatch.setattr(main, "embed", lambda texts: [[0.1] for _ in texts])
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "invalidate_catalog_cache", lambda: None)
+
+    result = main.ingest(
+        main.IngestRequest(text="\n".join(contents), scope="shared"),
+        _request(
+            "POST",
+            "/api/ingest",
+            user=_user(BOB_ID),
+            db=request_db,
+        ),
+    )
+
+    assert request_db.calls == [(
+        "approve_shared_memory_proposal",
+        {"target_proposal_id": other_proposal_id},
+    )]
+    assert result["proposal_id"] == own_proposal_id
+    assert result["status"] == "pending"
+    assert result["approval_count"] == 1
+    assert result["saved"] == 1
+    assert result["skipped"] == 1
+
+
+def test_create_race_approves_every_collided_pending_proposal(monkeypatch):
+    proposal_ids = [
+        "44444444-4444-4444-8444-444444444444",
+        "55555555-5555-4555-8555-555555555555",
+    ]
+    contents = ["첫 번째 충돌 기억", "두 번째 충돌 기억"]
+    hashes = [
+        main.hashlib.sha256(f"note\0{content}".encode()).hexdigest()
+        for content in contents
+    ]
+
+    class AllCollisionClient(_MemoryClient):
+        def rpc(self, name, params):
+            assert name == "create_shared_memory_proposal"
+
+            def execute():
+                self.rows = [
+                    {
+                        **_memory(
+                            f"pending-{index}",
+                            creator=ALICE_ID,
+                            content=content,
+                            publication_status="pending",
+                            proposal_id=proposal_ids[index],
+                        ),
+                        "content_hash": hashes[index],
+                    }
+                    for index, content in enumerate(contents)
+                ]
+                return _result([{"proposal_id": None, "inserted_count": 0}])
+
+            return SimpleNamespace(execute=execute)
+
+    class ApprovalClient:
+        def __init__(self):
+            self.calls = []
+
+        def rpc(self, name, params):
+            self.calls.append((name, params))
+            proposal_id = params["target_proposal_id"]
+            return SimpleNamespace(
+                execute=lambda: _result([{
+                    "proposal_id": proposal_id,
+                    "proposal_status": "published",
+                    "approval_count": 2,
+                    "required_approvals": 2,
+                    "published": True,
+                }])
+            )
+
+    service_db = AllCollisionClient()
+    request_db = ApprovalClient()
+    monkeypatch.setattr(main, "admin_sb", service_db)
+    monkeypatch.setattr(
+        main,
+        "parse_pasted_text",
+        lambda _text: {
+            "source": "note",
+            "records": [
+                {
+                    "content": content,
+                    "metadata": {"status": "참고"},
+                    "tags": [],
+                    "expires_at": None,
+                }
+                for content in contents
+            ],
+        },
+    )
+    monkeypatch.setattr(main, "embed", lambda texts: [[0.2] for _ in texts])
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "invalidate_catalog_cache", lambda: None)
+
+    result = main.ingest(
+        main.IngestRequest(text="\n".join(contents), scope="shared"),
+        _request(
+            "POST",
+            "/api/ingest",
+            user=_user(BOB_ID),
+            db=request_db,
+        ),
+    )
+
+    assert {
+        params["target_proposal_id"] for _name, params in request_db.calls
+    } == set(proposal_ids)
+    assert len(request_db.calls) == 2
+    assert result["saved"] == 0
+    assert result["skipped"] == 2
+    assert result["status"] == "published"
+    assert result["approval_count"] == 2
+
+
+def test_pending_proposal_list_marks_author_vote_and_other_users_eligibility(
+    monkeypatch,
+):
+    proposal_id = "33333333-3333-4333-8333-333333333333"
+    tables = {
+        "shared_memory_proposals": [{
+            "id": proposal_id,
+            "content": "팀 전체에 공유할 운영 정보",
+            "source": "note",
+            "created_by_user_id": ALICE_ID,
+            "status": "pending",
+            "required_approvals": 2,
+            "created_at": "2026-08-10T01:00:00+00:00",
+            "published_at": None,
+        }],
+        "shared_memory_proposal_approvals": [{
+            "proposal_id": proposal_id,
+            "approver_user_id": ALICE_ID,
+        }],
+        "account_profiles": [{"id": ALICE_ID, "username": "alice"}],
+    }
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+            self.equal_filters = []
+            self.in_filters = []
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, column, value):
+            self.equal_filters.append((column, value))
+            return self
+
+        def in_(self, column, values):
+            self.in_filters.append((column, set(values)))
+            return self
+
+        def limit(self, _count):
+            return self
+
+        def execute(self):
+            rows = [
+                row for row in self.rows
+                if all(row.get(column) == value for column, value in self.equal_filters)
+                and all(row.get(column) in values for column, values in self.in_filters)
+            ]
+            return _result([dict(row) for row in rows])
+
+    class ProposalReadClient:
+        def table(self, name):
+            return Query(tables[name])
+
+    monkeypatch.setattr(main, "admin_sb", ProposalReadClient())
+
+    author_view = main.list_shared_memory_proposals(
+        _request("GET", "/api/shared-memory-proposals", user=_user())
+    )["proposals"][0]
+    other_view = main.list_shared_memory_proposals(
+        _request(
+            "GET",
+            "/api/shared-memory-proposals",
+            user=_user(BOB_ID),
+        )
+    )["proposals"][0]
+
+    assert author_view["created_by_username"] == "alice"
+    assert author_view["approval_count"] == 1
+    assert author_view["required_approvals"] == 2
+    assert author_view["approved_by_me"] is True
+    assert author_view["can_approve"] is False
+    assert other_view["approval_count"] == 1
+    assert other_view["approved_by_me"] is False
+    assert other_view["can_approve"] is True
+
+
+@pytest.mark.parametrize(
+    ("loaded_count", "expected_count", "has_more", "next_offset"),
+    [
+        (3, 2, True, 6),
+        (2, 2, False, None),
+        (1, 1, False, None),
+    ],
+)
+def test_shared_proposal_get_pagination_contract(
+    monkeypatch,
+    loaded_count,
+    expected_count,
+    has_more,
+    next_offset,
+):
+    calls = []
+    rows = [{"id": f"proposal-{index}"} for index in range(loaded_count)]
+
+    def fake_load(user, proposal_id=None, *, page_size=100, offset=0):
+        calls.append((user["id"], proposal_id, page_size, offset))
+        return rows
+
+    monkeypatch.setattr(main, "load_shared_proposals", fake_load)
+
+    result = main.list_shared_memory_proposals(
+        _request("GET", "/api/shared-memory-proposals", user=_user()),
+        limit=2,
+        offset=4,
+    )
+
+    assert calls == [(ALICE_ID, None, 3, 4)]
+    assert result == {
+        "proposals": rows[:expected_count],
+        "has_more": has_more,
+        "next_offset": next_offset,
+    }
+
+
+def test_shared_proposal_loader_uses_server_side_range(monkeypatch):
+    proposal_rows = [
+        {
+            "id": f"proposal-{index}",
+            "content": f"proposal {index}",
+            "source": "note",
+            "created_by_user_id": None,
+            "status": "pending",
+            "required_approvals": 2,
+            "created_at": f"2026-08-10T00:{index:02d}:00+00:00",
+            "published_at": None,
+        }
+        for index in range(10)
+    ]
+
+    class PageQuery:
+        def __init__(self, client, table_name):
+            self.client = client
+            self.table_name = table_name
+            self.equal_filters = []
+            self.in_filters = []
+            self.bounds = None
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, column, value):
+            self.equal_filters.append((column, value))
+            return self
+
+        def in_(self, column, values):
+            self.in_filters.append((column, set(values)))
+            return self
+
+        def range(self, start, end):
+            self.bounds = (start, end)
+            self.client.ranges.append(self.bounds)
+            return self
+
+        def execute(self):
+            rows = self.client.tables[self.table_name]
+            rows = [
+                row for row in rows
+                if all(row.get(column) == value for column, value in self.equal_filters)
+                and all(row.get(column) in values for column, values in self.in_filters)
+            ]
+            if self.bounds:
+                start, end = self.bounds
+                rows = rows[start:end + 1]
+            return _result([dict(row) for row in rows])
+
+    class PageClient:
+        def __init__(self):
+            self.tables = {
+                "shared_memory_proposals": proposal_rows,
+                "shared_memory_proposal_approvals": [],
+                "account_profiles": [],
+            }
+            self.ranges = []
+
+        def table(self, name):
+            return PageQuery(self, name)
+
+    client = PageClient()
+    monkeypatch.setattr(main, "admin_sb", client)
+
+    page = main.load_shared_proposals(_user(), page_size=3, offset=4)
+
+    assert [row["id"] for row in page] == [
+        "proposal-4",
+        "proposal-5",
+        "proposal-6",
+    ]
+    assert client.ranges == [(4, 6)]
+
+
+@pytest.mark.parametrize(
+    ("limit", "offset"),
+    [(0, 0), (101, 0), (10, -1)],
+)
+def test_shared_proposal_get_rejects_invalid_pagination(
+    monkeypatch,
+    limit,
+    offset,
+):
+    monkeypatch.setattr(
+        main,
+        "load_shared_proposals",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid pagination must be rejected before database access"
+        ),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.list_shared_memory_proposals(
+            _request("GET", "/api/shared-memory-proposals", user=_user()),
+            limit=limit,
+            offset=offset,
+        )
+
+    assert raised.value.status_code == 422
+
+
+@pytest.mark.parametrize("role", ["viewer", "editor", "admin"])
+def test_distinct_user_or_admin_can_approve_pending_proposal(monkeypatch, role):
+    proposal_id = "33333333-3333-4333-8333-333333333333"
+    db = _RpcClient({
+        "approve_shared_memory_proposal": [{
+            "proposal_id": proposal_id,
+            "proposal_status": "published",
+            "approval_count": 2,
+            "required_approvals": 2,
+            "published": True,
+        }],
+    })
+    invalidations = []
+    monkeypatch.setattr(
+        main,
+        "load_shared_proposals",
+        lambda user, requested_id=None: [{
+            "id": requested_id,
+            "content": "승인된 팀 정보",
+            "source": "note",
+            "created_by_user_id": ALICE_ID,
+            "created_by_username": "alice",
+            "status": "published",
+            "created_at": "2026-08-10T01:00:00+00:00",
+            "approval_count": 2,
+            "required_approvals": 2,
+            "approved_by_me": True,
+            "can_approve": False,
+        }],
+    )
+    monkeypatch.setattr(
+        main,
+        "invalidate_catalog_cache",
+        lambda: invalidations.append(True),
+    )
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *_args, **_kwargs: pytest.fail(
+            "approval audit must be atomic inside the SQL RPC"
+        ),
+    )
+
+    result = main.approve_shared_memory_proposal(
+        proposal_id,
+        _request(
+            "POST",
+            f"/api/shared-memory-proposals/{proposal_id}/approve",
+            user=_user(BOB_ID, role=role),
+            db=db,
+        ),
+    )
+
+    assert db.calls == [(
+        "approve_shared_memory_proposal",
+        {"target_proposal_id": proposal_id},
+    )]
+    assert result["status"] == "published"
+    assert result["published"] is True
+    assert result["approval_count"] == 2
+    assert invalidations == [True]
 
 
 @pytest.mark.parametrize("scope", ["personal", "shared"])
@@ -1048,9 +1939,107 @@ def test_list_memories_includes_shared_and_own_but_hides_other_personal():
     assert by_id["alice-private"]["scope"] == "personal"
     assert by_id["alice-private"]["can_edit"] is True
     assert db.visibility_expressions == [
-        "scope.eq.shared,"
-        f"and(scope.eq.personal,owner_user_id.eq.{ALICE_ID})"
+        "and(scope.eq.shared,publication_status.eq.published),"
+        "and(scope.eq.personal,publication_status.eq.published,"
+        f"owner_user_id.eq.{ALICE_ID})"
     ]
+
+
+def test_published_shared_is_visible_to_every_user_but_pending_is_hidden(monkeypatch):
+    db = _MemoryClient([
+        _memory(
+            "published-shared",
+            scope="shared",
+            creator=ALICE_ID,
+            content="공개된 팀 운영 정보",
+        ),
+        _memory(
+            "pending-shared",
+            scope="shared",
+            creator=ALICE_ID,
+            content="아직 승인되지 않은 팀 정보",
+            publication_status="pending",
+            proposal_id="33333333-3333-4333-8333-333333333333",
+        ),
+        _memory("alice-private", scope="personal", owner=ALICE_ID),
+        _memory("bob-private", scope="personal", owner=BOB_ID, creator=BOB_ID),
+    ])
+    monkeypatch.setattr(main, "_catalog_cache", {})
+    monkeypatch.setattr(main, "_management_catalog_cache", {})
+
+    alice_ids = {row["id"] for row in main.memory_catalog(db, ALICE_ID)}
+    bob_ids = {row["id"] for row in main.memory_catalog(db, BOB_ID)}
+    bob_list_ids = {
+        row["id"]
+        for row in main.list_memories(
+            request=_request(
+                "GET",
+                "/api/memories",
+                user=_user(BOB_ID),
+                db=db,
+            ),
+            response=Response(),
+        )
+    }
+
+    assert alice_ids == {"published-shared", "alice-private"}
+    assert bob_ids == {"published-shared", "bob-private"}
+    assert bob_list_ids == {"published-shared", "bob-private"}
+    assert "pending-shared" not in alice_ids
+    assert "pending-shared" not in bob_ids
+    assert all(
+        "publication_status.eq.published" in expression
+        for expression in db.visibility_expressions
+    )
+
+
+def test_shared_author_cannot_patch_or_delete_published_memory(monkeypatch):
+    db = _MemoryClient([
+        _memory(
+            "published-shared",
+            scope="shared",
+            creator=ALICE_ID,
+            content="공개 후에는 관리자만 변경",
+        ),
+    ])
+    monkeypatch.setattr(
+        main,
+        "consume_ai_use",
+        lambda *_args: pytest.fail("forbidden updates must not consume a use"),
+    )
+    monkeypatch.setattr(
+        main,
+        "embed",
+        lambda *_args: pytest.fail("forbidden updates must not create embeddings"),
+    )
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(HTTPException) as patch_error:
+        main.update_memory(
+            "published-shared",
+            main.UpdateMemoryRequest(content="작성자가 바꾸려는 내용"),
+            _request(
+                "PATCH",
+                "/api/memories/published-shared",
+                user=_user(),
+                db=db,
+            ),
+        )
+
+    with pytest.raises(HTTPException) as delete_error:
+        main.delete_memory(
+            "published-shared",
+            _request(
+                "DELETE",
+                "/api/memories/published-shared",
+                user=_user(),
+                db=db,
+            ),
+        )
+
+    assert patch_error.value.status_code == 404
+    assert delete_error.value.status_code == 404
+    assert db.rows[0]["content"] == "공개 후에는 관리자만 변경"
 
 
 def test_filtered_list_supports_legacy_sender_tags_pagination_and_count(monkeypatch):
@@ -1269,6 +2258,7 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
         ),
     )
     monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main, "consume_ai_use", lambda user_id: 9)
 
     chunks = [
         SimpleNamespace(
@@ -1314,4 +2304,571 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
     assert [event["type"] for event in events] == ["meta", "delta", "delta", "done"]
     assert events[0]["resolved_question"] == "resolved question"
     assert events[0]["sources"] == [{"id": "memory-1"}]
+    assert events[0]["remaining_uses"] == 9
     assert "".join(event.get("content", "") for event in events) == "첫 번째 답변"
+
+
+class _RpcResult:
+    def __init__(self, value):
+        self.value = value
+
+    def execute(self):
+        if isinstance(self.value, Exception):
+            raise self.value
+        return _result(self.value)
+
+
+class _RpcClient:
+    def __init__(self, responses):
+        self.responses = dict(responses)
+        self.calls = []
+
+    def rpc(self, name, params):
+        self.calls.append((name, params))
+        return _RpcResult(self.responses[name])
+
+
+def test_consume_ai_use_returns_atomic_balance_and_maps_exhaustion(monkeypatch):
+    client = _RpcClient({"consume_ai_use": [{"remaining_uses": 9}]})
+    monkeypatch.setattr(main, "admin_sb", client)
+
+    assert main.consume_ai_use(ALICE_ID) == 9
+    assert client.calls == [(
+        "consume_ai_use",
+        {"target_user_id": ALICE_ID},
+    )]
+
+    client.responses["consume_ai_use"] = []
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_user_id",
+        lambda _user_id: {"id": ALICE_ID, "remaining_uses": 0},
+    )
+    with pytest.raises(HTTPException) as raised:
+        main.consume_ai_use(ALICE_ID)
+
+    assert raised.value.status_code == 402
+    assert raised.value.detail == main.AI_USES_EXHAUSTED_MESSAGE
+    assert raised.value.headers == {"X-Remaining-Uses": "0"}
+
+
+def test_consume_ai_use_distinguishes_missing_migration(monkeypatch):
+    client = _RpcClient({
+        "consume_ai_use": RuntimeError(
+            "Could not find the function public.consume_ai_use"
+        )
+    })
+    monkeypatch.setattr(main, "admin_sb", client)
+
+    with pytest.raises(HTTPException) as raised:
+        main.consume_ai_use(ALICE_ID)
+
+    assert raised.value.status_code == 503
+    assert "migration_ai_usage_credits.sql" in raised.value.detail
+
+
+def test_consume_ai_use_empty_result_with_missing_profile_is_503(monkeypatch):
+    client = _RpcClient({"consume_ai_use": []})
+    monkeypatch.setattr(main, "admin_sb", client)
+    monkeypatch.setattr(main, "account_profile_by_user_id", lambda _user_id: None)
+
+    with pytest.raises(HTTPException) as raised:
+        main.consume_ai_use(ALICE_ID)
+
+    assert raised.value.status_code == 503
+    assert "migration_ai_usage_credits.sql" in raised.value.detail
+
+
+def test_usage_balance_reads_current_users_database_balance(monkeypatch):
+    lookups = []
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_user_id",
+        lambda user_id: (
+            lookups.append(user_id)
+            or {"id": user_id, "remaining_uses": 6}
+        ),
+    )
+
+    result = main.usage_balance(
+        _request("GET", "/api/usage-balance", user=_user())
+    )
+
+    assert result == {"remaining_uses": 6}
+    assert lookups == [ALICE_ID]
+
+
+def test_ingest_refunds_use_when_processing_fails(monkeypatch):
+    refunds = []
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(
+        main,
+        "refund_ai_use_after_failure",
+        lambda user_id, remaining: refunds.append((user_id, remaining)) or 10,
+    )
+    monkeypatch.setattr(
+        main,
+        "parse_pasted_text",
+        lambda _text: (_ for _ in ()).throw(RuntimeError("parser unavailable")),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.ingest(
+            main.IngestRequest(text="valid memory"),
+            _request("POST", "/api/ingest", user=_user(), db=object()),
+        )
+
+    assert raised.value.status_code == 502
+    assert refunds == [(ALICE_ID, 9)]
+
+
+def test_ask_charges_once_and_refunds_processing_failure(monkeypatch):
+    prepared = {
+        "fallback": "stored answer",
+        "messages": None,
+        "resolved_question": None,
+        "sources": [],
+    }
+    consumed = []
+    monkeypatch.setattr(
+        main,
+        "consume_ai_use",
+        lambda user_id: consumed.append(user_id) or 9,
+    )
+    monkeypatch.setattr(main, "prepare_answer", lambda *_args: prepared)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    result = main.ask(
+        main.AskRequest(question="question"),
+        _request("POST", "/api/ask", user=_user(), db=object()),
+    )
+
+    assert consumed == [ALICE_ID]
+    assert result["answer"] == "stored answer"
+    assert result["remaining_uses"] == 9
+
+    refunds = []
+    monkeypatch.setattr(
+        main,
+        "prepare_answer",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("search failed")),
+    )
+    monkeypatch.setattr(
+        main,
+        "refund_ai_use_after_failure",
+        lambda user_id, remaining: refunds.append((user_id, remaining)) or 10,
+    )
+
+    with pytest.raises(RuntimeError, match="search failed"):
+        main.ask(
+            main.AskRequest(question="question"),
+            _request("POST", "/api/ask", user=_user(), db=object()),
+        )
+
+    assert refunds == [(ALICE_ID, 9)]
+
+
+def test_update_memory_charges_once_and_returns_balance(monkeypatch):
+    db = _MemoryClient([
+        _memory(
+            "personal-memory",
+            scope="personal",
+            owner=ALICE_ID,
+            creator=ALICE_ID,
+            content="old content",
+        ),
+    ])
+    consumed = []
+    monkeypatch.setattr(
+        main,
+        "consume_ai_use",
+        lambda user_id: consumed.append(user_id) or 9,
+    )
+    monkeypatch.setattr(main, "embed", lambda _texts: [[0.1]])
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    result = main.update_memory(
+        "personal-memory",
+        main.UpdateMemoryRequest(content="new content"),
+        _request("PATCH", "/api/memories/personal-memory", user=_user(), db=db),
+    )
+
+    assert consumed == [ALICE_ID]
+    assert result["content"] == "new content"
+    assert result["remaining_uses"] == 9
+
+
+def test_update_memory_refunds_when_embedding_fails(monkeypatch):
+    db = _MemoryClient([
+        _memory(
+            "personal-memory",
+            scope="personal",
+            owner=ALICE_ID,
+            creator=ALICE_ID,
+            content="old content",
+        ),
+    ])
+    refunds = []
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(
+        main,
+        "refund_ai_use_after_failure",
+        lambda user_id, remaining: refunds.append((user_id, remaining)) or 10,
+    )
+    monkeypatch.setattr(
+        main,
+        "embed",
+        lambda _texts: (_ for _ in ()).throw(RuntimeError("embedding unavailable")),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.update_memory(
+            "personal-memory",
+            main.UpdateMemoryRequest(content="new content"),
+            _request("PATCH", "/api/memories/personal-memory", user=_user(), db=db),
+        )
+
+    assert raised.value.status_code == 502
+    assert refunds == [(ALICE_ID, 9)]
+
+
+def test_stream_error_refunds_and_emits_restored_balance(monkeypatch):
+    prepared = {
+        "fallback": None,
+        "messages": [{"role": "user", "content": "question"}],
+        "resolved_question": None,
+        "sources": [],
+    }
+    refunds = []
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "prepare_answer", lambda *_args: prepared)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "refund_ai_use_after_failure",
+        lambda user_id, remaining: refunds.append((user_id, remaining)) or 10,
+    )
+
+    class FailedCompletions:
+        def create(self, **_kwargs):
+            raise RuntimeError("stream failed")
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=FailedCompletions())),
+    )
+    response = main.ask_stream(
+        main.AskRequest(question="question"),
+        _request("POST", "/api/ask/stream", user=_user(), db=object()),
+    )
+
+    async def collect():
+        return [part async for part in response.body_iterator]
+
+    events = [
+        json.loads(line)
+        for part in asyncio.run(collect())
+        for line in (part.decode() if isinstance(part, bytes) else part).splitlines()
+        if line
+    ]
+
+    assert [event["type"] for event in events] == ["meta", "error"]
+    assert events[0]["remaining_uses"] == 9
+    assert events[1]["remaining_uses"] == 10
+    assert refunds == [(ALICE_ID, 9)]
+
+
+def test_stream_cancellation_closes_generator_and_refunds_once(monkeypatch):
+    prepared = {
+        "fallback": None,
+        "messages": [{"role": "user", "content": "question"}],
+        "resolved_question": None,
+        "sources": [],
+    }
+    refunds = []
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "prepare_answer", lambda *_args: prepared)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "refund_ai_use_after_failure",
+        lambda user_id, remaining: refunds.append((user_id, remaining)) or 10,
+    )
+
+    response = main.ask_stream(
+        main.AskRequest(question="question"),
+        _request("POST", "/api/ask/stream", user=_user(), db=object()),
+    )
+
+    async def read_meta_then_disconnect():
+        iterator = response.body_iterator
+        first = await anext(iterator)
+        await iterator.aclose()
+        return first
+
+    raw_meta = asyncio.run(read_meta_then_disconnect())
+    meta = json.loads(raw_meta.decode() if isinstance(raw_meta, bytes) else raw_meta)
+
+    assert meta["type"] == "meta"
+    assert meta["remaining_uses"] == 9
+    assert refunds == [(ALICE_ID, 9)]
+
+
+def test_admin_api_paths_require_admin_for_every_method():
+    for method in ("GET", "POST", "PATCH", "DELETE"):
+        assert main.required_action(method, "/api/admin/accounts") == "admin"
+        assert main.required_action(
+            method,
+            f"/api/admin/accounts/{ALICE_ID}/recharge",
+        ) == "admin"
+
+
+def test_admin_recharge_revalidates_role_and_uses_fixed_ten(monkeypatch):
+    with pytest.raises(HTTPException) as raised:
+        main.recharge_account_ai_uses(
+            uuid.UUID(ALICE_ID),
+            _request("POST", "/api/admin/accounts/x/recharge", user=_user()),
+        )
+    assert raised.value.status_code == 403
+
+    client = _RpcClient({"recharge_ai_uses": [{"remaining_uses": 17}]})
+    monkeypatch.setattr(main, "admin_sb", client)
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *_args, **_kwargs: pytest.fail(
+            "recharge audit must be written atomically by the SQL RPC"
+        ),
+    )
+    admin = _user(BOB_ID, role="admin")
+
+    result = main.recharge_account_ai_uses(
+        uuid.UUID(ALICE_ID),
+        _request("POST", "/api/admin/accounts/x/recharge", user=admin),
+    )
+
+    assert client.calls == [(
+        "recharge_ai_uses",
+        {
+            "target_user_id": ALICE_ID,
+            "actor_user_id": BOB_ID,
+            "refill_count": 10,
+        },
+    )]
+    assert result["remaining_uses"] == 17
+    assert result["recharged"] == 10
+
+
+def test_admin_accounts_returns_only_expected_account_fields(monkeypatch):
+    rows = [{
+        "id": ALICE_ID,
+        "username": "alice",
+        "email": "alice@example.com",
+        "remaining_uses": 9,
+    }]
+
+    class AccountsQuery:
+        def __init__(self):
+            self.columns = None
+
+        def select(self, columns):
+            self.columns = columns
+            return self
+
+        def order(self, column):
+            assert column == "username"
+            return self
+
+        def execute(self):
+            return _result(rows)
+
+    class AccountsClient:
+        def __init__(self):
+            self.query = AccountsQuery()
+
+        def table(self, name):
+            assert name == "account_profiles"
+            return self.query
+
+    client = AccountsClient()
+    monkeypatch.setattr(main, "admin_sb", client)
+
+    result = main.admin_accounts(
+        _request("GET", "/api/admin/accounts", user=_user(role="admin"))
+    )
+
+    assert client.query.columns == "id,username,email,remaining_uses"
+    assert result == {"accounts": rows}
+
+
+def test_canonical_session_identity_includes_remaining_uses(monkeypatch):
+    auth_user = SimpleNamespace(
+        id=ALICE_ID,
+        email="alice@example.com",
+        app_metadata={},
+    )
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_user_id",
+        lambda _user_id: {
+            "id": ALICE_ID,
+            "username": "alice",
+            "email": "alice@example.com",
+            "remaining_uses": 7,
+        },
+    )
+
+    identity = main.canonical_auth_user_identity(auth_user)
+
+    assert identity["remaining_uses"] == 7
+
+
+def test_ai_usage_migration_is_rerunnable_and_service_role_only():
+    root = Path(__file__).resolve().parents[1]
+    migration = (root / "migration_ai_usage_credits.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+
+    assert "where remaining_uses is null" in migration
+    assert "profile.remaining_uses > 0" in migration
+    assert "raw_app_meta_data ->> 'app_role'" in migration
+    assert "refill_count < 1 or refill_count > 1000" in migration
+    assert "from public, anon, authenticated" in migration
+    assert "to service_role" in migration
+
+    for sql in (migration, (root / "schema.sql").read_text(encoding="utf-8").lower()):
+        recharge = sql.split(
+            "create or replace function public.recharge_ai_uses", 1
+        )[1].split("$$;", 1)[0]
+        assert "actor_username text" in recharge
+        assert "select profile.username" in recharge
+        assert "insert into public.audit_logs" in recharge
+        assert "'ai_uses_recharge'" in recharge
+        assert (
+            recharge.index("update public.account_profiles")
+            < recharge.index("insert into public.audit_logs")
+            < recharge.index("return query select updated_remaining")
+        )
+
+
+def test_shared_memory_approval_migration_enforces_distinct_two_user_consent():
+    root = Path(__file__).resolve().parents[1]
+    migration = (root / "migration_shared_memory_approvals.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+
+    assert "create table if not exists public.shared_memory_proposals" in migration
+    assert (
+        "create table if not exists public.shared_memory_proposal_approvals"
+        in migration
+    )
+    assert "required_approvals smallint not null default 2" in migration
+    assert "check (required_approvals = 2)" in migration
+    assert "primary key (proposal_id, approver_user_id)" in migration
+
+    create_rpc = migration.split(
+        "create or replace function public.create_shared_memory_proposal", 1
+    )[1].split(
+        "create or replace function public.approve_shared_memory_proposal", 1
+    )[0]
+    assert "creator_user_id" in create_rpc
+    assert "'pending'" in create_rpc
+    assert "proposal_id, approver_user_id" in create_rpc
+    assert "values (requested_proposal_id, creator_user_id)" in create_rpc
+    create_grants = migration.split(
+        "revoke all on function public.create_shared_memory_proposal", 1
+    )[1].split(
+        "revoke all on function public.approve_shared_memory_proposal", 1
+    )[0]
+    assert "from public, anon, authenticated" in create_grants
+    assert "to service_role" in create_grants
+
+    approve_rpc = migration.split(
+        "create or replace function public.approve_shared_memory_proposal", 1
+    )[1].split("-- replace all memory policies", 1)[0]
+    assert "approver_id uuid := auth.uid()" in approve_rpc
+    assert "for update" in approve_rpc
+    assert "on conflict (proposal_id, approver_user_id) do nothing" in approve_rpc
+    assert "counted_approvals >= proposal_record.required_approvals" in approve_rpc
+    assert "or approver_role = 'admin'" in approve_rpc
+    assert "set publication_status = 'published'" in approve_rpc
+    assert re.search(
+        r"set\s+publication_status\s*=\s*'published'.*proposal_id\s*=\s*null",
+        approve_rpc,
+        re.DOTALL,
+    )
+    assert "'shared_memory_proposal_approve'" in approve_rpc
+    assert "to authenticated, service_role" in approve_rpc
+
+    # Database policies and vector search independently exclude pending rows,
+    # even if an application query accidentally omits its publication filter.
+    select_policy = migration.split(
+        "create policy memories_authenticated_select", 1
+    )[1].split("create policy memories_authenticated_insert", 1)[0]
+    assert "scope = 'shared' and publication_status = 'published'" in select_policy
+    match_function = migration.split(
+        "create function public.match_memories", 1
+    )[1].split("revoke all on function public.match_memories", 1)[0]
+    assert "where memory.publication_status = 'published'" in match_function
+
+
+def test_shared_approval_schema_is_included_for_fresh_installations():
+    root = Path(__file__).resolve().parents[1]
+    schema = (root / "schema.sql").read_text(encoding="utf-8").lower()
+    migration = (root / "migration_shared_memory_approvals.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+
+    assert "public.shared_memory_proposals" in schema
+    assert "public.shared_memory_proposal_approvals" in schema
+    assert "public.create_shared_memory_proposal" in schema
+    assert "public.approve_shared_memory_proposal" in schema
+    assert "publication_status = 'published'" in schema
+    for sql in (migration, schema):
+        assert not re.search(r"(?m)^\s*(?:\+--|\*\*\*)", sql)
+
+
+def test_admin_duplicate_approval_still_audits_actual_publish_transition():
+    root = Path(__file__).resolve().parents[1]
+    for filename in ("migration_shared_memory_approvals.sql", "schema.sql"):
+        sql = (root / filename).read_text(encoding="utf-8").lower()
+        approve_rpc = sql.split(
+            "create or replace function public.approve_shared_memory_proposal", 1
+        )[1].split(
+            "alter function public.create_shared_memory_proposal", 1
+        )[0]
+
+        # An admin may already own the author's vote, so ON CONFLICT inserts no
+        # new approval. Publishing is still a state transition that must be
+        # audited independently of approval_inserted.
+        assert "on conflict (proposal_id, approver_user_id) do nothing" in approve_rpc
+        assert "or approver_role = 'admin'" in approve_rpc
+        assert "published_now boolean := false" in approve_rpc
+        assert "published_now := true" in approve_rpc
+        assert "if approval_inserted > 0 or published_now then" in approve_rpc
+        assert "'shared_memory_proposal_approve'" in approve_rpc
+        assert "'approval_added', approval_inserted > 0" in approve_rpc
+        assert (
+            approve_rpc.index("published_now := true")
+            < approve_rpc.index("if approval_inserted > 0 or published_now then")
+            < approve_rpc.index("'shared_memory_proposal_approve'")
+        )
+
+
+def test_memory_ui_labels_personal_and_shared_content_explicitly():
+    html = (
+        Path(__file__).resolve().parents[1] / "static" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert re.search(
+        r'name="memoryScope"[^>]+value="personal"[^>]*checked>개인기억',
+        html,
+    )
+    assert re.search(
+        r'name="memoryScope"[^>]+value="shared"[^>]*>모두의 기억',
+        html,
+    )
+    assert 'label: "개인기억"' in html
+    assert 'label: "모두의 기억"' in html
+    assert "작성자를 포함한 2명이 동의하면 모두에게 공개됩니다." in html

@@ -34,20 +34,26 @@
   header h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
   header p { color: var(--ink-soft); font-size: 13px; }
   .session-info {
-    margin-left: auto; display: none; align-items: center; gap: 8px;
+    margin-left: auto; display: none; align-items: center; gap: 8px; flex-wrap: wrap;
     color: var(--ink-soft); font-size: 11.5px;
   }
   .session-info.show { display: flex; }
-  .session-user { font-weight: 650; color: var(--ink); }
+  .session-user { font-weight: 650; color: var(--ink); overflow-wrap: anywhere; }
   .session-role {
     padding: 2px 6px; border-radius: 4px; background: var(--slate-soft);
     color: var(--slate); font-family: var(--mono); font-size: 10px; font-weight: 700;
   }
-  .logout-button, .activity-button, .architecture-button {
+  .usage-balance {
+    padding: 2px 7px; border-radius: 4px; background: var(--pine-soft);
+    color: var(--pine); font-family: var(--mono); font-size: 10px; font-weight: 700;
+    white-space: nowrap;
+  }
+  .logout-button, .activity-button, .account-button, .architecture-button {
     border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
     border-radius: 6px; padding: 5px 8px; font-size: 11px; cursor: pointer;
+    white-space: nowrap;
   }
-  .activity-button:hover, .architecture-button:hover { border-color: var(--pine); color: var(--pine); }
+  .activity-button:hover, .account-button:hover, .architecture-button:hover { border-color: var(--pine); color: var(--pine); }
   .architecture-button { text-decoration: none; }
   .logout-button:hover { border-color: #D8B7B1; color: #8C3B2E; }
   .role-hidden { display: none !important; }
@@ -153,6 +159,7 @@
   }
   .scope-badge.personal { background: var(--amber-soft); color: var(--amber); }
   .scope-badge.shared { background: var(--pine-soft); color: var(--pine); }
+  .scope-badge.pending { background: var(--slate-soft); color: var(--slate); }
   .mem.expired .txt { color: #A6B0AC; }
   .badge-exp {
     font-family: var(--mono); font-size: 10px; font-weight: 700;
@@ -240,6 +247,49 @@
     background: var(--slate-soft); color: var(--slate); font-size: 10px; font-weight: 600;
   }
 
+  /* ---- shared-memory approvals ---- */
+  #sharedApprovalPanel { margin-top: 20px; }
+  .approval-rule {
+    padding: 10px 18px; border-bottom: 1px solid var(--line);
+    background: #FAFBFA; color: var(--ink-soft); font-size: 11.5px; line-height: 1.5;
+  }
+  .approval-head-actions { display: flex; align-items: center; gap: 8px; }
+  .approval-refresh {
+    width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 6px;
+    background: #fff; color: var(--ink-soft); font-size: 16px; line-height: 1;
+    cursor: pointer;
+  }
+  .approval-refresh:hover { border-color: var(--pine); color: var(--pine); }
+  .approval-refresh:disabled { opacity: .55; cursor: wait; }
+  .approval-list { max-height: 300px; overflow-y: auto; }
+  .approval-item {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px;
+    align-items: center; padding: 12px 18px; border-top: 1px solid var(--line);
+  }
+  .approval-item:first-child { border-top: none; }
+  .approval-main { min-width: 0; }
+  .approval-labels { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+  .approval-content {
+    font-size: 13px; line-height: 1.5; color: var(--ink);
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow: hidden; overflow-wrap: anywhere;
+  }
+  .approval-meta { margin-top: 5px; color: var(--ink-soft); font-size: 11px; line-height: 1.4; }
+  .approval-action { min-width: 86px; text-align: right; }
+  .approval-action button {
+    border: 1px solid var(--pine); background: #fff; color: var(--pine);
+    border-radius: 6px; padding: 7px 10px; font-size: 11.5px; font-weight: 650;
+    cursor: pointer; white-space: nowrap;
+  }
+  .approval-action button:hover { background: var(--pine-soft); }
+  .approval-action button:disabled { opacity: .55; cursor: wait; }
+  .approval-empty, .approval-feedback {
+    padding: 14px 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.5;
+  }
+  .approval-feedback { display: none; border-top: 1px solid var(--line); color: var(--pine); }
+  .approval-feedback.show { display: block; }
+  .approval-feedback.error { color: #8C3B2E; }
+
   /* ---- login ---- */
   #loginOverlay {
     display: none; position: fixed; inset: 0; z-index: 10;
@@ -289,11 +339,6 @@
     background: var(--amber-soft); color: var(--amber); font-size: 11.5px;
     line-height: 1.5; text-align: left;
   }
-  .auth-doc-link {
-    display: inline-block; margin-top: 15px; color: var(--ink-soft);
-    font-size: 11.5px; text-underline-offset: 3px;
-  }
-  .auth-doc-link:hover { color: var(--pine); }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
@@ -327,12 +372,12 @@
   .edit-actions .confirm { background: var(--pine); border-color: var(--pine); color: #fff; }
 
   /* ---- audit log ---- */
-  #auditOverlay {
+  #auditOverlay, #accountOverlay {
     display: none; position: fixed; inset: 0; z-index: 20;
     background: rgba(23, 33, 29, .45); align-items: center; justify-content: center;
     padding: 20px;
   }
-  #auditOverlay.show { display: flex; }
+  #auditOverlay.show, #accountOverlay.show { display: flex; }
   .audit-dialog {
     width: min(920px, 100%); max-height: calc(100vh - 40px); overflow: hidden;
     background: #fff; border: 1px solid var(--line); border-radius: 8px;
@@ -356,6 +401,16 @@
   .audit-table td:nth-child(1), .audit-table td:nth-child(2), .audit-table td:nth-child(3) { white-space: nowrap; }
   .audit-table code { font: 10.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
   .audit-status { padding: 24px 18px; color: var(--ink-soft); font-size: 13px; text-align: center; }
+  .account-table { min-width: 560px; }
+  .account-table td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
+  .account-table td:nth-child(4) { width: 1%; white-space: nowrap; }
+  .account-balance { font-family: var(--mono); font-weight: 700; color: var(--pine); }
+  .recharge-button {
+    min-width: 66px; border: 1px solid var(--pine); background: #fff; color: var(--pine);
+    border-radius: 6px; padding: 5px 8px; font-size: 11px; font-weight: 650; cursor: pointer;
+  }
+  .recharge-button:hover { background: var(--pine-soft); }
+  .recharge-button:disabled { opacity: .55; cursor: wait; }
 
   /* ---- chat ---- */
   #chat {
@@ -410,8 +465,13 @@
     .session-info { margin-left: auto; }
     #chat { height: auto; min-height: 420px; }
   }
+  @media (max-width: 700px) {
+    .session-info { order: 4; width: 100%; margin-left: 0; justify-content: flex-start; }
+  }
   @media (max-width: 430px) {
     .scope-row { grid-template-columns: 1fr; gap: 6px; }
+    .approval-item { grid-template-columns: 1fr; }
+    .approval-action { min-width: 0; text-align: left; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .msg { animation: rise .18s ease-out; }
@@ -433,8 +493,8 @@
 
     <form class="auth-form" id="loginForm" role="tabpanel" aria-labelledby="loginTab">
       <div class="auth-field">
-        <label for="usernameBox">아이디 또는 이메일</label>
-        <input type="text" id="usernameBox" name="username" placeholder="admin 또는 name@example.com" autocomplete="username" autocapitalize="none" required>
+        <label for="usernameBox">아이디</label>
+        <input type="text" id="usernameBox" name="username" placeholder="사용자 아이디" autocomplete="username" autocapitalize="none" maxlength="32" required>
       </div>
       <div class="auth-field">
         <label for="pwBox">비밀번호</label>
@@ -466,7 +526,6 @@
       <div class="login-err" id="signupStatus" role="status" aria-live="polite"></div>
     </form>
 
-    <a class="auth-doc-link" href="/auth-architecture" target="_blank" rel="noopener noreferrer">회원가입·JWT·개인기억 보호 구조 보기 →</a>
   </section>
 </div>
 
@@ -476,8 +535,10 @@
   <div class="session-info" id="sessionInfo" aria-label="현재 로그인 정보">
     <span class="session-user" id="sessionUser"></span>
     <span class="session-role" id="sessionRole"></span>
-    <a class="architecture-button" href="/auth-architecture" target="_blank" rel="noopener noreferrer">보안 구조</a>
+    <span class="usage-balance" id="usageBalance" role="status" aria-live="polite">남은 -회</span>
+    <a class="architecture-button role-hidden" id="architectureBtn" href="/auth-architecture" target="_blank" rel="noopener noreferrer">보안 구조</a>
     <button type="button" class="activity-button role-hidden" id="auditLogBtn">활동 로그</button>
+    <button type="button" class="account-button role-hidden" id="accountManageBtn">사용자 관리</button>
     <button type="button" class="logout-button" id="logoutBtn">로그아웃</button>
   </div>
 </header>
@@ -494,12 +555,28 @@
           <label for="memoryScopePersonal"><input id="memoryScopePersonal" name="memoryScope" type="radio" value="personal" checked>개인기억</label>
           <label for="memoryScopeShared"><input id="memoryScopeShared" name="memoryScope" type="radio" value="shared">모두의 기억</label>
         </fieldset>
-        <p class="scope-help" id="memoryScopeHelp">개인기억은 나만, 모두의 기억은 모든 계정이 함께 볼 수 있어요.</p>
+        <p class="scope-help" id="memoryScopeHelp">개인기억은 나만 볼 수 있어요.</p>
       </div>
       <div class="ingest-foot">
         <span class="hint">Ctrl/⌘ + Enter로 저장</span>
         <button class="save" id="saveBtn" onclick="ingest()">저장하기</button>
       </div>
+    </div>
+
+    <div class="panel role-hidden" id="sharedApprovalPanel" aria-labelledby="sharedApprovalTitle">
+      <div class="panel-head">
+        <b id="sharedApprovalTitle">모두의 기억 승인</b>
+        <div class="approval-head-actions">
+          <span id="sharedApprovalCount" role="status" aria-live="polite"></span>
+          <button class="approval-refresh" id="sharedApprovalRefresh" type="button" title="승인 대기 새로고침" aria-label="승인 대기 새로고침">↻</button>
+        </div>
+      </div>
+      <p class="approval-rule" id="sharedApprovalRule">작성자를 포함한 2명이 동의하면 모두에게 공개됩니다.</p>
+      <div class="approval-list" id="sharedApprovalList" aria-busy="false"></div>
+      <div class="more-wrap" id="sharedApprovalMoreWrap" style="display:none">
+        <button id="sharedApprovalMoreBtn" type="button">더 보기</button>
+      </div>
+      <div class="approval-feedback" id="sharedApprovalFeedback" role="status" aria-live="polite"></div>
     </div>
 
     <div class="panel" id="recent">
@@ -580,6 +657,23 @@
   </div>
 </div>
 
+<div id="accountOverlay" aria-hidden="true">
+  <div class="audit-dialog" role="dialog" aria-modal="true" aria-labelledby="accountTitle" aria-describedby="accountStatus">
+    <div class="panel-head">
+      <b id="accountTitle">사용자 관리</b>
+      <button type="button" class="dialog-close" id="accountCloseBtn" aria-label="사용자 관리 닫기">×</button>
+    </div>
+    <div class="audit-table-wrap">
+      <table class="audit-table account-table">
+        <caption class="sr-only">사용자별 남은 사용 횟수와 충전 작업</caption>
+        <thead><tr><th>아이디</th><th>이메일</th><th>남은 횟수</th><th>작업</th></tr></thead>
+        <tbody id="accountRows"></tbody>
+      </table>
+      <div class="audit-status" id="accountStatus" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const chipName = { slack: "SLACK", email: "MAIL", note: "MEMO" };
@@ -588,6 +682,8 @@ let currentSession = null;
 
 async function apiFetch(input, init) {
   const response = await fetch(input, init);
+  const remainingUses = response.headers.get("x-remaining-uses");
+  if (remainingUses !== null) updateRemainingUses(remainingUses);
   if (response.status === 401) {
     showLogin();
     throw new Error("로그인 세션이 만료되었습니다. 다시 로그인하세요.");
@@ -611,8 +707,8 @@ function selectedMemoryScope() {
 
 function memoryScopeInfo(value) {
   return value === "personal"
-    ? { key: "personal", label: "개인" }
-    : { key: "shared", label: "공유" };
+    ? { key: "personal", label: "개인기억" }
+    : { key: "shared", label: "모두의 기억" };
 }
 
 function canWrite() {
@@ -621,6 +717,53 @@ function canWrite() {
 
 function isAdmin() {
   return currentSession && currentSession.role === "admin";
+}
+
+function updateMemoryScopeGuidance() {
+  const scope = selectedMemoryScope();
+  const help = $("memoryScopeHelp");
+  const button = $("saveBtn");
+  if (scope === "personal") {
+    help.textContent = "개인기억은 나만 볼 수 있어요.";
+    if (!button.disabled) button.textContent = "저장하기";
+    return;
+  }
+  if (isAdmin()) {
+    help.textContent = "관리자는 별도 동의 없이 모두의 기억으로 즉시 공개할 수 있어요.";
+    if (!button.disabled) button.textContent = "즉시 공개";
+    return;
+  }
+  help.textContent = "작성자 본인을 포함한 2명이 동의하면 모두의 기억으로 공개돼요.";
+  if (!button.disabled) button.textContent = "승인 요청";
+}
+
+document.querySelectorAll('input[name="memoryScope"]').forEach(input =>
+  input.addEventListener("change", updateMemoryScopeGuidance)
+);
+
+function updateRemainingUses(value) {
+  if (value === undefined || value === null || value === "") return;
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue < 0) return;
+  const remainingUses = Math.floor(numericValue);
+  if (currentSession) currentSession.remaining_uses = remainingUses;
+  $("usageBalance").textContent = `남은 ${remainingUses}회`;
+  $("usageBalance").setAttribute("aria-label", `AI 사용 가능 횟수 ${remainingUses}회`);
+}
+
+async function refreshRemainingUses() {
+  try {
+    const response = await fetch("/api/usage-balance");
+    if (response.status === 401) {
+      showLogin();
+      return;
+    }
+    if (!response.ok) return;
+    const data = await response.json();
+    updateRemainingUses(data.remaining_uses);
+  } catch (_) {
+    // 잔액 새로고침 실패가 완료된 사용자 작업을 실패로 바꾸지는 않습니다.
+  }
 }
 
 function showSaveResult(message, isError = false) {
@@ -639,7 +782,8 @@ async function ingest() {
   if (!text) return;
   const scope = selectedMemoryScope();
   const btn = $("saveBtn");
-  btn.disabled = true; btn.textContent = "저장 중…";
+  btn.disabled = true;
+  btn.textContent = scope === "shared" ? "처리 중…" : "저장 중…";
   showSaveResult("");
   try {
     const r = await apiFetch("/api/ingest", {
@@ -650,24 +794,312 @@ async function ingest() {
     const d = contentType.includes("application/json")
       ? await r.json()
       : { detail: await r.text() || `서버 오류 (${r.status})` };
+    updateRemainingUses(d.remaining_uses);
     if (!r.ok) throw new Error(d.detail || "저장 실패");
-    showSaveResult(
-      `${scope === "personal" ? "개인기억" : "모두의 기억"} · ${sourceLabel(d.source)}로 인식 · ${Number(d.saved) || 0}개 조각으로 저장했어요${d.skipped ? ` (중복 ${Number(d.skipped) || 0}건 건너뜀)` : ""}`
+    const sharedResult = d.proposal && typeof d.proposal === "object" ? d.proposal : d;
+    const sharedStatus = String(sharedResult.status || d.status || "").toLowerCase();
+    const isPending = scope === "shared" && (
+      d.pending_approval === true || d.approval_required === true ||
+      ["pending", "pending_approval", "awaiting_approval"].includes(sharedStatus)
     );
+    const isPublished = scope === "shared" && (
+      d.published === true || sharedResult.published === true ||
+      ["published", "approved"].includes(sharedStatus)
+    );
+    const recognizedSource = sourceLabel(d.source || sharedResult.source);
+    if (isPending) {
+      const approvalCount = Math.max(1, Number(sharedResult.approval_count ?? d.approval_count) || 1);
+      const requiredApprovals = Math.max(2, Number(sharedResult.required_approvals ?? d.required_approvals) || 2);
+      showSaveResult(
+        `모두의 기억 승인 요청 · ${recognizedSource}로 인식 · ${approvalCount}/${requiredApprovals}명 동의 · 다른 사용자가 동의하면 공개돼요.`
+      );
+    } else if (isPublished && isAdmin()) {
+      showSaveResult(
+        `모두의 기억 · 관리자 권한으로 즉시 공개 · ${recognizedSource}로 인식 · ${Number(d.saved) || 0}개 조각을 저장했어요.`
+      );
+    } else {
+      showSaveResult(
+        `${scope === "personal" ? "개인기억" : "모두의 기억"} · ${recognizedSource}로 인식 · ${Number(d.saved) || 0}개 조각으로 저장했어요${d.skipped ? ` (중복 ${Number(d.skipped) || 0}건 건너뜀)` : ""}`
+      );
+    }
     $("pasteBox").value = "";
     $("memoryScopePersonal").checked = true;
+    updateMemoryScopeGuidance();
     filtersLoaded = false;
-    loadRecent();
+    await Promise.all([loadRecent(), scope === "shared" ? loadSharedProposals() : Promise.resolve()]);
   } catch (e) {
     showSaveResult(`저장 실패: ${e.message}`, true);
   } finally {
-    btn.disabled = false; btn.textContent = "저장하기";
+    await refreshRemainingUses();
+    btn.disabled = false;
+    updateMemoryScopeGuidance();
   }
 }
 
 $("pasteBox").addEventListener("keydown", e => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") ingest();
 });
+
+const SHARED_PROPOSAL_PAGE_SIZE = 100;
+let sharedProposalItems = [];
+let sharedProposalNextOffset = 0;
+let sharedProposalHasMore = false;
+let sharedProposalLoading = false;
+let sharedProposalLoadMoreFailed = false;
+let sharedProposalRequestVersion = 0;
+
+function proposalListFromPayload(data) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.proposals)) return data.proposals;
+  if (data && Array.isArray(data.items)) return data.items;
+  return [];
+}
+
+function proposalAuthorId(proposal) {
+  return String(
+    proposal.author_user_id || proposal.created_by_user_id ||
+    proposal.requester_user_id || proposal.owner_user_id || ""
+  );
+}
+
+function proposalAuthorName(proposal) {
+  return String(
+    proposal.author_username || proposal.created_by_username ||
+    proposal.requester_username || proposal.username || "사용자"
+  );
+}
+
+function proposalApprovalInfo(proposal) {
+  const approvals = Array.isArray(proposal.approvals) ? proposal.approvals : [];
+  const approvedUserIds = Array.isArray(proposal.approved_by_user_ids)
+    ? proposal.approved_by_user_ids.map(String) : [];
+  const isAuthor = proposal.is_author === true || (
+    proposalAuthorId(proposal) && proposalAuthorId(proposal) === String(currentSession && currentSession.id || "")
+  );
+  const approvedByMe = proposal.approved_by_me === true || isAuthor ||
+    approvedUserIds.includes(String(currentSession && currentSession.id || ""));
+  const explicitCanApprove = typeof proposal.can_approve === "boolean" ? proposal.can_approve : null;
+  const canApprove = !approvedByMe && (explicitCanApprove === null || explicitCanApprove);
+  const approvalCount = Math.max(
+    1,
+    Number(proposal.approval_count ?? proposal.approvals_count ?? approvals.length) || 1,
+  );
+  const requiredApprovals = Math.max(2, Number(proposal.required_approvals) || 2);
+  return { isAuthor, approvedByMe, canApprove, approvalCount, requiredApprovals };
+}
+
+function setSharedApprovalFeedback(message = "", isError = false) {
+  const feedback = $("sharedApprovalFeedback");
+  feedback.textContent = message;
+  feedback.classList.toggle("show", Boolean(message));
+  feedback.classList.toggle("error", Boolean(message) && isError);
+}
+
+function appendProposalBadge(container, className, text) {
+  const badge = document.createElement("span");
+  badge.className = className;
+  badge.textContent = text;
+  container.appendChild(badge);
+}
+
+function renderSharedProposals(proposals) {
+  const list = $("sharedApprovalList");
+  list.replaceChildren();
+  const pending = proposals.filter(proposal => {
+    const status = String(proposal && proposal.status || "pending").toLowerCase();
+    return !["published", "approved", "rejected", "cancelled"].includes(status);
+  });
+  $("sharedApprovalCount").textContent = pending.length
+    ? `${pending.length}건${sharedProposalHasMore ? " 이상" : ""} 대기`
+    : "대기 없음";
+
+  if (!pending.length) {
+    const empty = document.createElement("div");
+    empty.className = "approval-empty";
+    empty.textContent = "승인을 기다리는 모두의 기억이 없습니다.";
+    list.appendChild(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  pending.forEach(proposal => {
+    const info = proposalApprovalInfo(proposal || {});
+    const item = document.createElement("article");
+    item.className = "approval-item";
+
+    const main = document.createElement("div");
+    main.className = "approval-main";
+    const labels = document.createElement("div");
+    labels.className = "approval-labels";
+    appendProposalBadge(labels, `chip ${sourceKey(proposal.source)}`, sourceLabel(proposal.source));
+    appendProposalBadge(labels, "scope-badge shared", "모두의 기억");
+    appendProposalBadge(
+      labels,
+      "scope-badge pending",
+      `${info.approvalCount}/${info.requiredApprovals}명 동의`,
+    );
+    main.appendChild(labels);
+
+    const content = document.createElement("div");
+    content.className = "approval-content";
+    content.textContent = String(proposal.content || proposal.text || proposal.original_text || "내용 없음");
+    main.appendChild(content);
+
+    const meta = document.createElement("div");
+    meta.className = "approval-meta";
+    const rawDate = proposal.created_at ? new Date(proposal.created_at) : null;
+    const createdAt = rawDate && !Number.isNaN(rawDate.getTime())
+      ? rawDate.toLocaleString("ko-KR") : "";
+    meta.textContent = `${proposalAuthorName(proposal)} 작성${createdAt ? ` · ${createdAt}` : ""}`;
+    main.appendChild(meta);
+    item.appendChild(main);
+
+    const action = document.createElement("div");
+    action.className = "approval-action";
+    const button = document.createElement("button");
+    button.type = "button";
+    if (info.canApprove) {
+      button.textContent = isAdmin() ? "즉시 공개" : "동의하기";
+      button.setAttribute(
+        "aria-label",
+        isAdmin() ? `${proposalAuthorName(proposal)}의 모두의 기억 즉시 공개` : `${proposalAuthorName(proposal)}의 모두의 기억에 동의`,
+      );
+      button.addEventListener("click", () => approveSharedProposal(proposal, button));
+    } else {
+      button.disabled = true;
+      button.textContent = info.isAuthor ? "내 동의 완료" : "동의 완료";
+      button.setAttribute("aria-label", button.textContent);
+    }
+    action.appendChild(button);
+    item.appendChild(action);
+    fragment.appendChild(item);
+  });
+  list.appendChild(fragment);
+}
+
+function updateSharedProposalMoreButton() {
+  const wrap = $("sharedApprovalMoreWrap");
+  const button = $("sharedApprovalMoreBtn");
+  wrap.style.display = sharedProposalHasMore ? "" : "none";
+  button.disabled = sharedProposalLoading;
+  button.textContent = sharedProposalLoading
+    ? "불러오는 중…"
+    : sharedProposalLoadMoreFailed ? "다시 시도" : "더 보기";
+}
+
+async function loadSharedProposals({ append = false } = {}) {
+  if (!currentSession || sharedProposalLoading || (append && !sharedProposalHasMore)) return;
+  const list = $("sharedApprovalList");
+  const refreshButton = $("sharedApprovalRefresh");
+  const offset = append ? sharedProposalNextOffset : 0;
+  const requestUserId = String(currentSession.id || "");
+  const requestVersion = append ? sharedProposalRequestVersion : ++sharedProposalRequestVersion;
+  sharedProposalLoading = true;
+  if (!append) {
+    sharedProposalItems = [];
+    sharedProposalNextOffset = 0;
+    sharedProposalHasMore = false;
+    sharedProposalLoadMoreFailed = false;
+    $("sharedApprovalCount").textContent = "";
+    list.replaceChildren();
+    setSharedApprovalFeedback("");
+  } else {
+    sharedProposalLoadMoreFailed = false;
+    setSharedApprovalFeedback("");
+  }
+  refreshButton.disabled = true;
+  updateSharedProposalMoreButton();
+  list.setAttribute("aria-busy", "true");
+  if (!list.children.length) {
+    const loading = document.createElement("div");
+    loading.className = "approval-empty";
+    loading.textContent = "승인 대기 목록을 불러오는 중입니다.";
+    list.appendChild(loading);
+  }
+  try {
+    const params = new URLSearchParams({
+      limit: String(SHARED_PROPOSAL_PAGE_SIZE),
+      offset: String(offset),
+    });
+    const response = await apiFetch(`/api/shared-memory-proposals?${params}`);
+    const data = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(responseErrorMessage(data, "승인 대기 목록을 불러오지 못했습니다."));
+    }
+    if (!currentSession || String(currentSession.id || "") !== requestUserId ||
+        requestVersion !== sharedProposalRequestVersion) return;
+    const incoming = proposalListFromPayload(data);
+    const seen = new Set();
+    sharedProposalItems = [...(append ? sharedProposalItems : []), ...incoming].filter(proposal => {
+      const id = String(proposal && proposal.id || "");
+      if (!id) return true;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    const providedNextOffset = Number(data && data.next_offset);
+    sharedProposalNextOffset = Number.isFinite(providedNextOffset) && providedNextOffset >= 0
+      ? Math.floor(providedNextOffset)
+      : offset + incoming.length;
+    sharedProposalHasMore = data && data.has_more === true && incoming.length > 0;
+    sharedProposalLoadMoreFailed = false;
+    renderSharedProposals(sharedProposalItems);
+  } catch (error) {
+    if (!currentSession || String(currentSession.id || "") !== requestUserId ||
+        requestVersion !== sharedProposalRequestVersion) return;
+    const messageText = error.message || "승인 대기 목록을 불러오지 못했습니다.";
+    if (append) {
+      sharedProposalLoadMoreFailed = true;
+      setSharedApprovalFeedback(`다음 승인 목록을 불러오지 못했습니다. ${messageText}`, true);
+    } else {
+      $("sharedApprovalCount").textContent = "";
+      list.replaceChildren();
+      const message = document.createElement("div");
+      message.className = "approval-empty";
+      message.textContent = messageText;
+      list.appendChild(message);
+    }
+  } finally {
+    if (requestVersion !== sharedProposalRequestVersion) return;
+    sharedProposalLoading = false;
+    list.setAttribute("aria-busy", "false");
+    refreshButton.disabled = false;
+    updateSharedProposalMoreButton();
+  }
+}
+
+async function approveSharedProposal(proposal, button) {
+  if (!currentSession || !proposal || !proposal.id) return;
+  button.disabled = true;
+  button.textContent = isAdmin() ? "공개 중…" : "동의 중…";
+  setSharedApprovalFeedback("");
+  try {
+    const response = await apiFetch(
+      `/api/shared-memory-proposals/${encodeURIComponent(proposal.id)}/approve`,
+      { method: "POST" },
+    );
+    const data = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(responseErrorMessage(data, "동의를 반영하지 못했습니다."));
+    }
+    const result = data.proposal && typeof data.proposal === "object" ? data.proposal : data;
+    const status = String(result.status || data.status || "").toLowerCase();
+    const published = data.published === true || result.published === true ||
+      ["published", "approved"].includes(status);
+    await Promise.all([loadSharedProposals(), published ? loadRecent() : Promise.resolve()]);
+    if (published) {
+      setSharedApprovalFeedback("동의가 완료되어 모두의 기억으로 공개됐습니다.");
+    } else {
+      const info = proposalApprovalInfo(result);
+      setSharedApprovalFeedback(`동의가 반영됐습니다. 현재 ${info.approvalCount}/${info.requiredApprovals}명 동의했습니다.`);
+    }
+  } catch (error) {
+    if (!currentSession) return;
+    const message = error.message || "동의를 반영하지 못했습니다.";
+    await loadSharedProposals();
+    if (currentSession) setSharedApprovalFeedback(message, true);
+  }
+}
 
 let activeTag = null;
 let activeSection = "";
@@ -951,6 +1383,7 @@ async function saveEdit() {
       }),
     });
     const data = await response.json();
+    updateRemainingUses(data.remaining_uses);
     if (!response.ok) throw new Error(data.detail || "수정 실패");
     closeEdit();
     filtersLoaded = false;
@@ -958,6 +1391,7 @@ async function saveEdit() {
   } catch (error) {
     if (currentSession) alert(`수정 실패: ${error.message}`);
   } finally {
+    await refreshRemainingUses();
     button.disabled = false;
     button.textContent = "저장";
   }
@@ -983,6 +1417,7 @@ function appendAuditCell(row, value, asCode = false) {
 
 async function openAuditLog() {
   if (!isAdmin()) return;
+  closeAccountManagement();
   const overlay = $("auditOverlay");
   const rows = $("auditRows");
   const status = $("auditStatus");
@@ -1031,9 +1466,111 @@ function closeAuditLog() {
   if (wasOpen && isAdmin()) $("auditLogBtn").focus();
 }
 
+function appendAccountCell(row, value, className = "") {
+  const cell = document.createElement("td");
+  if (className) cell.className = className;
+  cell.textContent = auditValue(value);
+  row.appendChild(cell);
+  return cell;
+}
+
+async function rechargeAccount(account, button, balanceCell) {
+  if (!isAdmin() || !account || !account.id) return;
+  const status = $("accountStatus");
+  button.disabled = true;
+  button.textContent = "충전 중";
+  status.textContent = "";
+  try {
+    const response = await apiFetch(`/api/admin/accounts/${encodeURIComponent(account.id)}/recharge`, {
+      method: "POST",
+    });
+    const data = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(responseErrorMessage(data, "사용 횟수를 충전하지 못했습니다."));
+    }
+    const remainingUses = Math.max(0, Math.floor(Number(data.remaining_uses) || 0));
+    account.remaining_uses = remainingUses;
+    balanceCell.textContent = `${remainingUses}회`;
+    if (currentSession && currentSession.id === String(account.id)) {
+      updateRemainingUses(remainingUses);
+    }
+    status.textContent = `${account.username || account.email || "사용자"} 계정에 ${Number(data.recharged) || 10}회를 충전했습니다.`;
+  } catch (error) {
+    if (currentSession) status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = "+10회";
+  }
+}
+
+function renderAccounts(accounts) {
+  const rows = $("accountRows");
+  rows.replaceChildren();
+  const fragment = document.createDocumentFragment();
+  accounts.forEach(account => {
+    const row = document.createElement("tr");
+    appendAccountCell(row, account && account.username);
+    appendAccountCell(row, account && account.email);
+    const remainingUses = Math.max(0, Math.floor(Number(account && account.remaining_uses) || 0));
+    const balanceCell = appendAccountCell(row, `${remainingUses}회`, "account-balance");
+    const actionCell = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recharge-button";
+    button.textContent = "+10회";
+    button.setAttribute(
+      "aria-label",
+      `${account && (account.username || account.email) || "사용자"} 계정에 10회 충전`,
+    );
+    button.addEventListener("click", () => rechargeAccount(account, button, balanceCell));
+    actionCell.appendChild(button);
+    row.appendChild(actionCell);
+    fragment.appendChild(row);
+  });
+  rows.appendChild(fragment);
+}
+
+async function openAccountManagement() {
+  if (!isAdmin()) return;
+  closeAuditLog();
+  const overlay = $("accountOverlay");
+  const status = $("accountStatus");
+  $("accountRows").replaceChildren();
+  status.textContent = "사용자 목록을 불러오는 중입니다.";
+  overlay.classList.add("show");
+  overlay.setAttribute("aria-hidden", "false");
+  $("accountCloseBtn").focus();
+
+  try {
+    const response = await apiFetch("/api/admin/accounts");
+    const data = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(responseErrorMessage(data, "사용자 목록을 불러오지 못했습니다."));
+    }
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    if (!accounts.length) {
+      status.textContent = "등록된 사용자가 없습니다.";
+      return;
+    }
+    renderAccounts(accounts);
+    status.textContent = "";
+  } catch (error) {
+    if (currentSession) status.textContent = error.message;
+  }
+}
+
+function closeAccountManagement() {
+  const overlay = $("accountOverlay");
+  const wasOpen = overlay.classList.contains("show");
+  overlay.classList.remove("show");
+  overlay.setAttribute("aria-hidden", "true");
+  if (wasOpen && isAdmin()) $("accountManageBtn").focus();
+}
+
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && $("editOverlay").classList.contains("show")) closeEdit();
   if (event.key === "Escape" && $("auditOverlay").classList.contains("show")) closeAuditLog();
+  if (event.key === "Escape" && $("accountOverlay").classList.contains("show")) closeAccountManagement();
 });
 
 function addMsg(cls, html) {
@@ -1047,32 +1584,49 @@ function addMsg(cls, html) {
   return div;
 }
 
-const CHAT_STORAGE_KEY = "memory-agent-chat-v1";
+const LEGACY_CHAT_STORAGE_KEY = "memory-agent-chat-v1";
+const CHAT_STORAGE_PREFIX = "memory-agent-chat-v2:";
 const CHAT_OWNER_KEY = 'memory-agent-chat-owner-v1';
-let chatHistory = loadChatHistory();
+localStorage.removeItem(LEGACY_CHAT_STORAGE_KEY);
+let chatHistory = [];
 let chatRendered = false;
 
-function loadChatHistory() {
+function chatStorageKey(userId = currentSession && currentSession.id) {
+  const normalizedUserId = String(userId || "").trim();
+  return normalizedUserId ? `${CHAT_STORAGE_PREFIX}${normalizedUserId}` : "";
+}
+
+function removeChatHistory(userId = currentSession && currentSession.id) {
+  const storageKey = chatStorageKey(userId);
+  if (storageKey) localStorage.removeItem(storageKey);
+}
+
+function loadChatHistory(userId) {
+  const storageKey = chatStorageKey(userId);
+  if (!storageKey) return [];
   try {
-    const saved = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || "[]");
+    const saved = JSON.parse(localStorage.getItem(storageKey) || "[]");
     if (!Array.isArray(saved)) return [];
     const sanitized = saved.slice(-12).map(message => ({
       role: message && message.role === "assistant" ? "assistant" : "user",
       content: String(message && message.content || ""),
     }));
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(sanitized));
+    localStorage.setItem(storageKey, JSON.stringify(sanitized));
     return sanitized;
   } catch (_) {
+    localStorage.removeItem(storageKey);
     return [];
   }
 }
 
 function saveChatHistory() {
+  const storageKey = chatStorageKey();
+  if (!storageKey) return;
   const persisted = chatHistory.slice(-12).map(message => ({
     role: message.role === "assistant" ? "assistant" : "user",
     content: String(message.content || ""),
   }));
-  localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(persisted));
+  localStorage.setItem(storageKey, JSON.stringify(persisted));
 }
 
 function botMessageHtml(answer, sources = []) {
@@ -1081,12 +1635,14 @@ function botMessageHtml(answer, sources = []) {
   if (safeSources.length) {
     html += `<div class="srcs">` + safeSources.map((s, i) => {
       const source = sourceKey(s && s.source);
-      return `<button type="button" class="chip ${source}" data-source-index="${i}" aria-expanded="false">${escapeHtml(sourceLabel(source))} · 원문</button>`;
+      const scope = memoryScopeInfo(s && (s.scope || s.memory_scope));
+      return `<button type="button" class="chip ${source}" data-source-index="${i}" aria-expanded="false">${escapeHtml(sourceLabel(source))} · ${escapeHtml(scope.label)} · 원문</button>`;
     }
     ).join("") + `</div>`;
-    html += safeSources.map((s, i) =>
-      `<div class="raw" data-raw="${i}"><b>원문 그대로 (${escapeHtml(sourceLabel(s && s.source))})</b>${escapeHtml(s && s.content || "")}</div>`
-    ).join("");
+    html += safeSources.map((s, i) => {
+      const scope = memoryScopeInfo(s && (s.scope || s.memory_scope));
+      return `<div class="raw" data-raw="${i}"><b>${escapeHtml(scope.label)} · 원문 그대로 (${escapeHtml(sourceLabel(s && s.source))})</b>${escapeHtml(s && s.content || "")}</div>`;
+    }).join("");
   }
   return html;
 }
@@ -1150,7 +1706,7 @@ function resetChatView() {
 function clearChat() {
   if (!chatHistory.length || confirm("대화 이력을 모두 지울까요?")) {
     chatHistory = [];
-    localStorage.removeItem(CHAT_STORAGE_KEY);
+    removeChatHistory();
     $("log").innerHTML = `<div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>`;
   }
 }
@@ -1205,18 +1761,28 @@ async function ask() {
     if (!response.ok) {
       const raw = await response.text();
       let detail = raw || `서버 오류 (${response.status})`;
-      try { detail = JSON.parse(raw).detail || detail; } catch (_) {}
+      try {
+        const data = JSON.parse(raw);
+        updateRemainingUses(data.remaining_uses);
+        detail = data.detail || detail;
+      } catch (_) {}
       throw new Error(detail);
     }
 
     await readNdjson(response, event => {
-      if (event.type === "meta") sources = event.sources || [];
+      if (event.type === "meta") {
+        sources = event.sources || [];
+        updateRemainingUses(event.remaining_uses);
+      }
       if (event.type === "delta") {
         answer += event.content || "";
         answerNode.innerHTML = renderAnswerMarkdown(answer);
         $("log").scrollTop = $("log").scrollHeight;
       }
-      if (event.type === "error") throw new Error(event.detail || "스트리밍이 중단됐습니다.");
+      if (event.type === "error") {
+        updateRemainingUses(event.remaining_uses);
+        throw new Error(event.detail || "스트리밍이 중단됐습니다.");
+      }
       if (event.type === "done") completed = true;
     });
 
@@ -1233,6 +1799,7 @@ async function ask() {
       : `<p>오류가 발생했어요: ${escapeHtml(error.message)}</p>`;
     bot.innerHTML = `<div class="answer">${partial}</div>`;
   } finally {
+    await refreshRemainingUses();
     isAsking = false;
     $("log").setAttribute("aria-busy", "false");
     input.disabled = false;
@@ -1310,12 +1877,12 @@ async function doLogin() {
     });
     const data = await responsePayload(r);
     if (!r.ok) {
-      throw new Error(responseErrorMessage(data, "아이디, 이메일 또는 비밀번호가 맞지 않아요."));
+      throw new Error(responseErrorMessage(data, "아이디 또는 비밀번호가 맞지 않아요."));
     }
     if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
     $("loginOverlay").classList.remove("show");
     $("pwBox").value = "";
-    await loadRecent();
+    await Promise.all([loadRecent(), loadSharedProposals()]);
     renderChatHistory();
   } catch (error) {
     $("loginErr").textContent = error.message;
@@ -1365,7 +1932,7 @@ async function doSignup() {
     $("signupPwBox").value = "";
     $("signupPwConfirmBox").value = "";
     if (!data.requires_email_confirmation && await loadSession()) {
-      await loadRecent();
+      await Promise.all([loadRecent(), loadSharedProposals()]);
       renderChatHistory();
       return;
     }
@@ -1390,14 +1957,12 @@ function applySession(data) {
     id: String(user.id || ""),
     username: String(user.username || user.email || "사용자"),
     role,
+    remaining_uses: null,
   };
-  const chatOwner = localStorage.getItem(CHAT_OWNER_KEY);
-  if (!currentSession.id || chatOwner !== currentSession.id) {
-    localStorage.removeItem(CHAT_STORAGE_KEY);
-    chatHistory = [];
-    chatRendered = false;
-    resetChatView();
-  }
+  updateRemainingUses(user.remaining_uses);
+  chatHistory = loadChatHistory(currentSession.id);
+  chatRendered = false;
+  resetChatView();
   localStorage.setItem(CHAT_OWNER_KEY, currentSession.id);
   const roleNames = { admin: "관리자", editor: "편집자", viewer: "조회자" };
   $("sessionUser").textContent = currentSession.username;
@@ -1407,18 +1972,31 @@ function applySession(data) {
   $("loginOverlay").classList.remove("show");
   setAppInert(false);
   $("ingestPanel").classList.toggle("role-hidden", !canWrite());
+  $("sharedApprovalPanel").classList.remove("role-hidden");
+  $("sharedApprovalRule").textContent = isAdmin()
+    ? "관리자는 승인 대기 요청을 즉시 모두의 기억으로 공개할 수 있습니다."
+    : "작성자를 포함한 2명이 동의하면 모두에게 공개됩니다.";
+  updateMemoryScopeGuidance();
   $("editSaveBtn").classList.toggle("role-hidden", !canWrite());
+  $("architectureBtn").classList.toggle("role-hidden", !isAdmin());
   $("auditLogBtn").classList.toggle("role-hidden", !isAdmin());
+  $("accountManageBtn").classList.toggle("role-hidden", !isAdmin());
   if (!canWrite()) closeEdit();
   if (!isAdmin()) closeAuditLog();
+  if (!isAdmin()) closeAccountManagement();
 }
 
 function showLogin() {
+  const previousUserId = currentSession && currentSession.id;
+  if (previousUserId) {
+    removeChatHistory(previousUserId);
+    localStorage.removeItem(CHAT_OWNER_KEY);
+  }
   currentSession = null;
   chatHistory = [];
   chatRendered = false;
-  localStorage.removeItem(CHAT_STORAGE_KEY);
-  localStorage.removeItem(CHAT_OWNER_KEY);
+  $("usageBalance").textContent = "남은 -회";
+  $("usageBalance").setAttribute("aria-label", "AI 사용 가능 횟수 확인 전");
   resetChatView();
   filtersLoaded = false;
   memoryById.clear();
@@ -1430,10 +2008,24 @@ function showLogin() {
   showSaveResult('');
   closeEdit();
   closeAuditLog();
+  closeAccountManagement();
   $('editSaveBtn').classList.add('role-hidden');
+  $("architectureBtn").classList.add("role-hidden");
   $("sessionInfo").classList.remove("show");
   $("auditLogBtn").classList.add("role-hidden");
+  $("accountManageBtn").classList.add("role-hidden");
   $("ingestPanel").classList.add("role-hidden");
+  $("sharedApprovalPanel").classList.add("role-hidden");
+  $("sharedApprovalList").replaceChildren();
+  $("sharedApprovalCount").textContent = "";
+  sharedProposalItems = [];
+  sharedProposalNextOffset = 0;
+  sharedProposalHasMore = false;
+  sharedProposalLoading = false;
+  sharedProposalLoadMoreFailed = false;
+  sharedProposalRequestVersion += 1;
+  updateSharedProposalMoreButton();
+  setSharedApprovalFeedback("");
   $("cleanBtn").style.display = "none";
   setAppInert(true);
   $("loginOverlay").classList.add("show");
@@ -1464,9 +2056,9 @@ async function logout() {
   try {
     await fetch("/api/logout", { method: "POST" });
   } finally {
+    removeChatHistory();
     chatHistory = [];
     chatRendered = false;
-    localStorage.removeItem(CHAT_STORAGE_KEY);
     memoryById.clear();
     $("memList").replaceChildren();
     $("tagBar").replaceChildren();
@@ -1481,6 +2073,13 @@ async function logout() {
     showLogin();
   }
 }
+
+window.addEventListener("storage", event => {
+  if (event.storageArea !== localStorage || event.key !== CHAT_OWNER_KEY || !currentSession) return;
+  if (event.newValue === currentSession.id) return;
+  removeChatHistory(currentSession.id);
+  window.location.reload();
+});
 
 $("loginTab").addEventListener("click", () => setAuthMode("login"));
 $("signupTab").addEventListener("click", () => setAuthMode("signup"));
@@ -1505,13 +2104,25 @@ $("auditCloseBtn").addEventListener("click", closeAuditLog);
 $("auditOverlay").addEventListener("click", event => {
   if (event.target === $("auditOverlay")) closeAuditLog();
 });
+$("accountManageBtn").addEventListener("click", openAccountManagement);
+$("accountCloseBtn").addEventListener("click", closeAccountManagement);
+$("accountOverlay").addEventListener("click", event => {
+  if (event.target === $("accountOverlay")) closeAccountManagement();
+});
+$("sharedApprovalRefresh").addEventListener("click", () => {
+  setSharedApprovalFeedback("");
+  loadSharedProposals();
+});
+$("sharedApprovalMoreBtn").addEventListener("click", () => {
+  loadSharedProposals({ append: true });
+});
 
 async function init() {
   if (!await loadSession()) {
     showLogin();
     return;
   }
-  await loadRecent();
+  await Promise.all([loadRecent(), loadSharedProposals()]);
   renderChatHistory();
 }
 

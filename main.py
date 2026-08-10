@@ -25,7 +25,7 @@ from openai import OpenAI
 from pydantic import BaseModel, field_validator
 from supabase import create_client
 from supabase.client import ClientOptions
-from starlette.concurrency import run_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 load_dotenv()
 
@@ -78,6 +78,7 @@ _management_catalog_cache: dict[str, tuple[float, list[dict]]] = {}
 VALID_ROLES = {"viewer", "editor", "admin"}
 ROLE_LEVEL = {"viewer": 1, "editor": 2, "admin": 3}
 OPEN_PATHS = {"/api/login", "/api/signup", "/healthz"}
+PROTECTED_PAGE_ACTIONS = {"/auth-architecture": "admin"}
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_ATTEMPTS = 5
 ACCESS_COOKIE = "ma_access_token"
@@ -168,13 +169,20 @@ def canonical_auth_user_identity(
         profile = account_profile_by_user_id(identity["id"])
     except Exception as exc:
         logger.warning("Canonical account profile lookup failed: %s", type(exc).__name__)
+        identity["remaining_uses"] = None
         return identity
     if not profile:
+        identity["remaining_uses"] = None
         return identity
-    return auth_user_identity(
+    identity = auth_user_identity(
         auth_user,
         trusted_username=str(profile.get("username") or ""),
     )
+    try:
+        identity["remaining_uses"] = max(int(profile.get("remaining_uses")), 0)
+    except (TypeError, ValueError):
+        identity["remaining_uses"] = None
+    return identity
 
 
 def restore_supabase_session(access_token: str, refresh_token: str) -> Optional[dict]:
@@ -261,7 +269,12 @@ def role_allows(role: str, action: str) -> bool:
 
 
 def required_action(method: str, path: str) -> str:
-    if path in {"/api/audit-logs", "/api/memories/expired"}:
+    if path in PROTECTED_PAGE_ACTIONS:
+        return PROTECTED_PAGE_ACTIONS[path]
+    if path.startswith("/api/admin/") or path in {
+        "/api/audit-logs",
+        "/api/memories/expired",
+    }:
         return "admin"
     if path == "/api/ingest" or method in {"PATCH", "PUT", "DELETE"}:
         return "write"
@@ -317,13 +330,165 @@ def needs_security_migration(exc: Exception) -> bool:
             "created_by_user_id",
             "query_scope",
             "account_profiles",
+            "publication_status",
+            "shared_memory_proposals",
+            "shared_memory_proposal_approvals",
+            "approve_shared_memory_proposal",
+            "create_shared_memory_proposal",
         )
+    )
+
+
+def needs_ai_usage_migration(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        name in message
+        for name in (
+            "remaining_uses",
+            "consume_ai_use",
+            "refund_ai_use",
+            "recharge_ai_uses",
+        )
+    )
+
+
+def signup_http_exception(exc: Exception) -> HTTPException:
+    """Translate Supabase Auth failures without exposing upstream internals."""
+    code = str(
+        getattr(exc, "code", None) or getattr(exc, "error_code", None) or ""
+    ).strip().lower()
+    name = str(getattr(exc, "name", None) or type(exc).__name__).strip().lower()
+    message = str(getattr(exc, "message", "") or str(exc)).strip().lower()
+    try:
+        status = int(
+            getattr(exc, "status", None)
+            or getattr(exc, "status_code", None)
+            or 0
+        )
+    except (TypeError, ValueError):
+        status = 0
+
+    if needs_security_migration(exc):
+        return HTTPException(
+            503,
+            "회원가입 데이터베이스 설정이 완료되지 않았습니다. 관리자에게 문의하세요.",
+        )
+
+    duplicate_email_codes = {
+        "email_exists",
+        "user_already_exists",
+        "identity_already_exists",
+    }
+    duplicate_email_message = any(
+        phrase in message
+        for phrase in (
+            "user already registered",
+            "email already registered",
+            "email address is already",
+        )
+    )
+    if code in duplicate_email_codes or duplicate_email_message:
+        return HTTPException(
+            409,
+            "이미 가입된 이메일입니다. 로그인하거나 다른 이메일을 사용하세요.",
+        )
+
+    if code == "weak_password" or name == "authweakpassworderror" or any(
+        phrase in message
+        for phrase in (
+            "weak password",
+            "password is too weak",
+            "password should be at least",
+        )
+    ):
+        return HTTPException(
+            400,
+            "비밀번호가 보안 정책을 충족하지 않습니다. "
+            "더 길고 추측하기 어려운 비밀번호를 사용하세요.",
+        )
+
+    invalid_email_message = "email" in message and any(
+        phrase in message for phrase in ("invalid", "not authorized")
+    )
+    if (
+        code in {"email_address_invalid", "email_address_not_authorized"}
+        or (code == "validation_failed" and invalid_email_message)
+        or any(
+            phrase in message
+            for phrase in (
+                "invalid email",
+                "email address is invalid",
+                "email address not authorized",
+            )
+        )
+    ):
+        return HTTPException(
+            400,
+            "사용할 수 없는 이메일 주소입니다. 실제 수신 가능한 이메일을 입력하세요.",
+        )
+
+    rate_limit_codes = {"over_email_send_rate_limit", "over_request_rate_limit"}
+    if code in rate_limit_codes or status == 429:
+        return HTTPException(
+            429,
+            "회원가입 요청이 너무 많습니다. 잠시 후 다시 시도하세요.",
+        )
+
+    if code in {"signup_disabled", "email_provider_disabled", "provider_disabled"}:
+        return HTTPException(
+            503,
+            "현재 이메일 회원가입을 사용할 수 없습니다. 관리자에게 문의하세요.",
+        )
+
+    if code == "captcha_failed":
+        return HTTPException(400, "보안 확인에 실패했습니다. 다시 시도하세요.")
+
+    if any(
+        phrase in message
+        for phrase in (
+            "database error saving new user",
+            "database error creating new user",
+        )
+    ):
+        return HTTPException(
+            503,
+            "회원가입 데이터베이스 설정 오류입니다. 관리자에게 문의하세요.",
+        )
+
+    if (
+        code == "unexpected_failure"
+        or status >= 500
+        or name in {
+            "authretryableerror",
+            "connecterror",
+            "connecttimeout",
+            "readtimeout",
+        }
+    ):
+        return HTTPException(
+            503,
+            "회원가입 서비스에 일시적인 오류가 발생했습니다. 잠시 후 다시 시도하세요.",
+        )
+
+    return HTTPException(
+        400,
+        "회원가입 요청을 처리하지 못했습니다. 입력 내용을 다시 확인하세요. "
+        "문제가 계속되면 관리자에게 문의하세요.",
     )
 
 
 MEMORY_MIGRATION_MESSAGE = (
     "Supabase에서 migration_security.sql 실행 후 "
     "migration_memory_scopes.sql을 실행하세요."
+)
+AI_USAGE_MIGRATION_MESSAGE = (
+    "Supabase에서 migration_ai_usage_credits.sql을 실행하세요."
+)
+SHARED_APPROVAL_MIGRATION_MESSAGE = (
+    "Supabase에서 migration_shared_memory_approvals.sql을 실행하세요."
+)
+AI_USES_EXHAUSTED_MESSAGE = (
+    "사용 횟수를 모두 사용했습니다. 관리자에게 충전을 요청하세요."
 )
 
 
@@ -350,7 +515,9 @@ def add_api_security_headers(response: Response) -> Response:
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and path not in OPEN_PATHS:
+    protected_api = path.startswith("/api/") and path not in OPEN_PATHS
+    protected_page_action = PROTECTED_PAGE_ACTIONS.get(path)
+    if protected_api or protected_page_action:
         restored = await run_in_threadpool(
             restore_supabase_session,
             request.cookies.get(ACCESS_COOKIE, ""),
@@ -366,7 +533,7 @@ async def auth_middleware(request: Request, call_next):
             "access_token": restored["access_token"],
             "refresh_token": restored["refresh_token"],
         }
-        action = required_action(request.method, path)
+        action = protected_page_action or required_action(request.method, path)
         if not role_allows(restored["user"]["role"], action):
             write_audit(
                 restored["user"]["username"],
@@ -463,7 +630,7 @@ def account_profile_by_username(username: str) -> Optional[dict]:
 def account_profile_by_user_id(user_id: str) -> Optional[dict]:
     result = (
         admin_sb.table("account_profiles")
-        .select("id,username,email")
+        .select("id,username,email,remaining_uses")
         .eq("id", user_id)
         .limit(1)
         .execute()
@@ -472,10 +639,105 @@ def account_profile_by_user_id(user_id: str) -> Optional[dict]:
     return rows[0] if rows else None
 
 
-def resolve_login_email(identifier: str) -> str:
-    normalized = identifier.strip().lower()
-    if "@" in normalized:
-        return normalized
+def rpc_remaining_uses(result: object) -> Optional[int]:
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        row = data[0] if data else None
+    else:
+        row = data
+    if isinstance(row, dict):
+        value = row.get("remaining_uses")
+    else:
+        value = row
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def account_remaining_uses(user_id: str) -> int:
+    try:
+        profile = account_profile_by_user_id(str(uuid.UUID(user_id)))
+    except Exception as exc:
+        logger.exception("Failed to read AI use balance")
+        if needs_ai_usage_migration(exc):
+            raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+        raise HTTPException(502, "사용 횟수 상태를 확인하지 못했습니다.")
+
+    if not profile or "remaining_uses" not in profile:
+        raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+    try:
+        remaining_uses = int(profile["remaining_uses"])
+    except (TypeError, ValueError):
+        raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+    if remaining_uses < 0:
+        raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+    return remaining_uses
+
+
+def consume_ai_use(user_id: str) -> int:
+    try:
+        result = admin_sb.rpc(
+            "consume_ai_use",
+            {"target_user_id": str(uuid.UUID(user_id))},
+        ).execute()
+    except Exception as exc:
+        logger.exception("Failed to consume AI use")
+        if needs_ai_usage_migration(exc):
+            raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+        raise HTTPException(502, "사용 횟수를 확인하지 못했습니다.")
+
+    remaining_uses = rpc_remaining_uses(result)
+    if remaining_uses is None:
+        current_remaining = account_remaining_uses(user_id)
+        if current_remaining == 0:
+            raise HTTPException(
+                402,
+                AI_USES_EXHAUSTED_MESSAGE,
+                headers={"X-Remaining-Uses": "0"},
+            )
+        logger.error(
+            "AI use consume returned no row for account with remaining balance"
+        )
+        raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+    return remaining_uses
+
+
+def refund_ai_use(user_id: str) -> int:
+    try:
+        result = admin_sb.rpc(
+            "refund_ai_use",
+            {"target_user_id": str(uuid.UUID(user_id))},
+        ).execute()
+    except Exception as exc:
+        logger.exception("Failed to refund AI use")
+        if needs_ai_usage_migration(exc):
+            raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+        raise HTTPException(502, "사용 횟수를 복구하지 못했습니다.")
+
+    remaining_uses = rpc_remaining_uses(result)
+    if remaining_uses is None:
+        raise HTTPException(502, "사용 횟수를 복구하지 못했습니다.")
+    return remaining_uses
+
+
+def refund_ai_use_after_failure(user_id: str, consumed_remaining: int) -> int:
+    try:
+        return refund_ai_use(user_id)
+    except Exception:
+        logger.exception("AI use refund failed after request processing error")
+        return consumed_remaining
+
+
+def require_admin_user(request: Request) -> dict:
+    user = current_user(request)
+    if user.get("role") != "admin":
+        raise HTTPException(403, "관리자 권한이 필요합니다.")
+    return user
+
+
+def resolve_login_email(username: str) -> str:
+    normalized = normalize_username(username)
     if not valid_username(normalized):
         return ""
     profile = account_profile_by_username(normalized)
@@ -515,10 +777,13 @@ def signup(req: SignupRequest, request: Request, response: Response):
     except HTTPException:
         raise
     except Exception as exc:
-        logger.info("Supabase signup failed: %s", type(exc).__name__)
-        if needs_security_migration(exc):
-            raise HTTPException(503, "Supabase에서 migration_auth_accounts.sql을 실행하세요.")
-        raise HTTPException(400, "회원가입에 실패했습니다. 이메일, 비밀번호 또는 중복 계정을 확인하세요.")
+        logger.info(
+            "Supabase signup failed: type=%s code=%s status=%s",
+            type(exc).__name__,
+            getattr(exc, "code", ""),
+            getattr(exc, "status", ""),
+        )
+        raise signup_http_exception(exc)
 
     if not auth_user:
         raise HTTPException(409, "이미 가입된 이메일이거나 계정을 생성하지 못했습니다.")
@@ -557,7 +822,7 @@ def login(req: LoginRequest, request: Request, response: Response):
     if len(login_attempts(ip)) >= LOGIN_MAX_ATTEMPTS:
         raise HTTPException(429, "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.")
 
-    identifier = req.username.strip().lower()
+    identifier = normalize_username(req.username)
     try:
         email = resolve_login_email(identifier)
     except Exception as exc:
@@ -591,10 +856,12 @@ def login(req: LoginRequest, request: Request, response: Response):
             "unknown",
             "login_failed",
             ip=ip,
-            attempted_identifier_kind="email" if "@" in identifier else "username",
+            attempted_identifier_kind=(
+                "username" if valid_username(identifier) else "invalid"
+            ),
             attempted_identifier_hash=identifier_digest,
         )
-        raise HTTPException(401, "아이디/이메일 또는 비밀번호가 맞지 않아요.")
+        raise HTTPException(401, "아이디 또는 비밀번호가 맞지 않아요.")
 
     _login_failures.pop(ip, None)
     set_auth_cookies(
@@ -634,6 +901,61 @@ def logout(request: Request, response: Response):
 @app.get("/api/session")
 def session(request: Request):
     return {"auth_enabled": AUTH_ENABLED, "user": current_user(request)}
+
+
+@app.get("/api/usage-balance")
+def usage_balance(request: Request):
+    user = current_user(request)
+    return {"remaining_uses": account_remaining_uses(user["id"])}
+
+
+@app.get("/api/admin/accounts")
+def admin_accounts(request: Request):
+    require_admin_user(request)
+    try:
+        result = (
+            admin_sb.table("account_profiles")
+            .select("id,username,email,remaining_uses")
+            .order("username")
+            .execute()
+        )
+    except Exception as exc:
+        logger.exception("Failed to list accounts for AI use management")
+        if needs_ai_usage_migration(exc):
+            raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+        raise HTTPException(502, "사용자 목록을 불러오지 못했습니다.")
+    return {"accounts": result.data or []}
+
+
+@app.post("/api/admin/accounts/{target_user_id}/recharge")
+def recharge_account_ai_uses(target_user_id: uuid.UUID, request: Request):
+    actor = require_admin_user(request)
+    try:
+        result = admin_sb.rpc(
+            "recharge_ai_uses",
+            {
+                "target_user_id": str(target_user_id),
+                "actor_user_id": actor["id"],
+                "refill_count": 10,
+            },
+        ).execute()
+    except Exception as exc:
+        logger.exception("Failed to recharge AI uses")
+        if needs_ai_usage_migration(exc):
+            raise HTTPException(503, AI_USAGE_MIGRATION_MESSAGE)
+        if "42501" in str(exc) or "관리자 권한" in str(exc):
+            raise HTTPException(403, "관리자 권한이 필요합니다.")
+        raise HTTPException(502, "사용 횟수를 충전하지 못했습니다.")
+
+    remaining_uses = rpc_remaining_uses(result)
+    if remaining_uses is None:
+        raise HTTPException(404, "충전할 사용자를 찾지 못했습니다.")
+    return {
+        "user_id": str(target_user_id),
+        "recharged": 10,
+        "refill_count": 10,
+        "remaining_uses": remaining_uses,
+    }
 
 
 @app.get("/healthz")
@@ -691,6 +1013,36 @@ def embed(texts: list[str]) -> list[list[float]]:
     return [d.embedding for d in resp.data]
 
 
+def first_rpc_row(result: object) -> Optional[dict]:
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        row = data[0] if data else None
+    else:
+        row = data
+    return row if isinstance(row, dict) else None
+
+
+def approve_shared_proposal(db, proposal_id: str) -> dict:
+    try:
+        result = db.rpc(
+            "approve_shared_memory_proposal",
+            {"target_proposal_id": str(uuid.UUID(proposal_id))},
+        ).execute()
+    except Exception as exc:
+        logger.exception("Failed to approve shared-memory proposal")
+        if needs_security_migration(exc):
+            raise HTTPException(503, SHARED_APPROVAL_MIGRATION_MESSAGE)
+        message = str(exc).lower()
+        if "not found" in message or "p0002" in message:
+            raise HTTPException(404, "공유 기억 제안을 찾지 못했습니다.")
+        raise HTTPException(502, "공유 기억 승인 처리에 실패했습니다.")
+
+    row = first_rpc_row(result)
+    if not row:
+        raise HTTPException(502, "공유 기억 승인 결과를 확인하지 못했습니다.")
+    return row
+
+
 def invalidate_catalog_cache() -> None:
     _catalog_cache.clear()
     _management_catalog_cache.clear()
@@ -699,8 +1051,9 @@ def invalidate_catalog_cache() -> None:
 def visible_memories_query(query, user_id: str):
     normalized_user_id = str(uuid.UUID(user_id))
     return query.or_(
-        "scope.eq.shared,"
-        f"and(scope.eq.personal,owner_user_id.eq.{normalized_user_id})"
+        "and(scope.eq.shared,publication_status.eq.published),"
+        "and(scope.eq.personal,publication_status.eq.published,"
+        f"owner_user_id.eq.{normalized_user_id})"
     )
 
 
@@ -718,7 +1071,8 @@ def _load_memory_catalog(db, user_id: str, *, include_expired: bool) -> list[dic
             db.table("memories")
             .select(
                 "id,source,content,metadata,created_at,expires_at,"
-                "scope,owner_user_id,created_by_user_id"
+                "scope,owner_user_id,created_by_user_id,publication_status,"
+                "proposal_id,approved_at"
             )
             .order("created_at", desc=True)
             .order("id", desc=True)
@@ -1102,6 +1456,18 @@ def ingest(req: IngestRequest, request: Request):
 
     user = current_user(request)
     db = current_db(request)
+    remaining_uses = consume_ai_use(user["id"])
+    try:
+        result = ingest_with_consumed_use(req, user, db)
+    except Exception:
+        refund_ai_use_after_failure(user["id"], remaining_uses)
+        raise
+    result["remaining_uses"] = remaining_uses
+    return result
+
+
+def ingest_with_consumed_use(req: IngestRequest, user: dict, db) -> dict:
+    text = req.text.strip()
     scope = req.scope
     owner_user_id = user["id"] if scope == "personal" else None
 
@@ -1129,11 +1495,16 @@ def ingest(req: IngestRequest, request: Request):
     rows = []
     saved = 0
     skipped = 0
+    proposal_id = None
+    approval_count = 2
+    required_approvals = 2
+    publication_status = "published"
     try:
         hashes = [record["content_hash"] for record in records]
+        lookup_db = admin_sb if scope == "shared" else db
         existing_query = (
-            db.table("memories")
-            .select("content_hash")
+            lookup_db.table("memories")
+            .select("content_hash,publication_status,proposal_id")
             .eq("scope", scope)
             .in_("content_hash", hashes)
         )
@@ -1143,6 +1514,24 @@ def ingest(req: IngestRequest, request: Request):
             else existing_query.is_("owner_user_id", "null")
         )
         existing = existing_query.execute().data or []
+
+        # Saving the same pending shared content is an explicit consent action.
+        # The creator's repeat is idempotent; a different user supplies the
+        # second approval. Admin approval publishes immediately.
+        duplicate_approvals = []
+        pending_proposal_ids = {
+            row.get("proposal_id")
+            for row in existing
+            if row.get("publication_status") == "pending"
+            and row.get("proposal_id")
+        } if scope == "shared" else set()
+        for pending_proposal_id in pending_proposal_ids:
+            duplicate_approvals.append(
+                approve_shared_proposal(db, pending_proposal_id)
+            )
+        if duplicate_approvals:
+            invalidate_catalog_cache()
+
         existing_hashes = {row.get("content_hash") for row in existing}
         updated_at = datetime.now(timezone.utc).isoformat()
         for r, v in zip(records, vectors):
@@ -1160,10 +1549,98 @@ def ingest(req: IngestRequest, request: Request):
                 "owner_user_id": owner_user_id,
                 "created_by_user_id": user["id"],
                 "updated_at": updated_at,
+                "publication_status": "published",
+                "proposal_id": None,
+                "approved_at": updated_at,
             })
 
         new_rows = [row for row in rows if row["content_hash"] not in existing_hashes]
-        if new_rows:
+        if scope == "shared" and user["role"] != "admin" and new_rows:
+            requested_proposal_id = str(uuid.uuid4())
+            proposal_records = [
+                {
+                    **row,
+                    "publication_status": "pending",
+                    "proposal_id": requested_proposal_id,
+                    "approved_at": None,
+                }
+                for row in new_rows
+            ]
+            proposal_result = admin_sb.rpc(
+                "create_shared_memory_proposal",
+                {
+                    "requested_proposal_id": requested_proposal_id,
+                    "creator_user_id": user["id"],
+                    "proposal_content": text,
+                    "proposal_source": source,
+                    "proposal_records": proposal_records,
+                },
+            ).execute()
+            proposal_row = first_rpc_row(proposal_result) or {}
+            proposal_id = proposal_row.get("proposal_id")
+            saved = int(proposal_row.get("inserted_count") or 0)
+            own_proposal_id = proposal_id
+
+            # The proposal RPC can insert only part of the parsed batch when a
+            # concurrent request wins one or more content-hash conflicts. Each
+            # collided proposal still receives this user's explicit consent.
+            collided = (
+                admin_sb.table("memories")
+                .select("proposal_id,publication_status")
+                .eq("scope", "shared")
+                .in_("content_hash", [row["content_hash"] for row in new_rows])
+                .execute()
+                .data
+                or []
+            )
+            collided_pending_ids = sorted({
+                row.get("proposal_id")
+                for row in collided
+                if row.get("publication_status") == "pending"
+                and row.get("proposal_id")
+                and row.get("proposal_id") != own_proposal_id
+            })
+            raced_approvals = [
+                approve_shared_proposal(db, collided_proposal_id)
+                for collided_proposal_id in collided_pending_ids
+            ]
+
+            if own_proposal_id:
+                proposal_id = own_proposal_id
+                publication_status = "pending"
+                approval_count = 1
+            elif raced_approvals:
+                # If any collided proposal is still waiting (for example, this
+                # user was already its author), report that unresolved proposal.
+                raced_approval = next(
+                    (
+                        row for row in raced_approvals
+                        if row.get("proposal_status") != "published"
+                    ),
+                    raced_approvals[0],
+                )
+                proposal_id = raced_approval.get("proposal_id")
+                publication_status = (
+                    raced_approval.get("proposal_status") or "pending"
+                )
+                approval_count = int(
+                    raced_approval.get("approval_count") or 1
+                )
+            else:
+                proposal_id = None
+                publication_status = "published"
+                approval_count = 2
+        elif scope == "shared" and user["role"] != "admin" and not new_rows:
+            if duplicate_approvals:
+                duplicate_approval = duplicate_approvals[0]
+                proposal_id = duplicate_approval.get("proposal_id")
+                publication_status = (
+                    duplicate_approval.get("proposal_status") or "pending"
+                )
+                approval_count = int(
+                    duplicate_approval.get("approval_count") or 1
+                )
+        elif new_rows:
             inserted = (
                 db.table("memories")
                 .upsert(
@@ -1174,10 +1651,40 @@ def ingest(req: IngestRequest, request: Request):
                 .execute()
             )
             saved = len(inserted.data or [])
+
+            # Close the small lookup/upsert race for an admin colliding with a
+            # newly-created pending proposal.
+            if scope == "shared" and user["role"] == "admin" and saved < len(new_rows):
+                collided = (
+                    admin_sb.table("memories")
+                    .select("proposal_id,publication_status")
+                    .eq("scope", "shared")
+                    .in_("content_hash", [row["content_hash"] for row in new_rows])
+                    .execute()
+                    .data
+                    or []
+                )
+                for collided_proposal_id in {
+                    row.get("proposal_id")
+                    for row in collided
+                    if row.get("publication_status") == "pending"
+                    and row.get("proposal_id")
+                }:
+                    approve_shared_proposal(db, collided_proposal_id)
         skipped = len(rows) - saved
         invalidate_catalog_cache()
     except Exception as exc:
         logger.exception("Failed to write memories to Supabase")
+        if any(
+            name in str(exc).lower()
+            for name in (
+                "publication_status",
+                "shared_memory_proposals",
+                "shared_memory_proposal_approvals",
+                "create_shared_memory_proposal",
+            )
+        ):
+            raise HTTPException(503, SHARED_APPROVAL_MIGRATION_MESSAGE)
         if needs_security_migration(exc):
             raise HTTPException(503, MEMORY_MIGRATION_MESSAGE)
         raise HTTPException(502, "기억 저장소 연결 또는 저장에 실패했습니다. 서버 로그를 확인하세요.")
@@ -1186,6 +1693,7 @@ def ingest(req: IngestRequest, request: Request):
         user["username"], user["role"], "memory_ingest",
         actor_user_id=user["id"],
         batch_id=batch_id, source=source, scope=scope, saved=saved, skipped=skipped,
+        proposal_id=proposal_id, publication_status=publication_status,
     )
     return {
         "source": source,
@@ -1195,7 +1703,148 @@ def ingest(req: IngestRequest, request: Request):
         "skipped": skipped,
         "batch_id": batch_id,
         "preview": [r["content"][:80] for r in records[:3]],
+        "status": publication_status,
+        "published": publication_status == "published",
+        "pending_approval": publication_status == "pending",
+        "approval_required": publication_status == "pending",
+        "proposal_id": proposal_id,
+        "approval_count": approval_count,
+        "required_approvals": required_approvals,
     }
+
+
+def load_shared_proposals(
+    user: dict,
+    proposal_id: Optional[str] = None,
+    *,
+    page_size: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    try:
+        query = (
+            admin_sb.table("shared_memory_proposals")
+            .select(
+                "id,content,source,created_by_user_id,status,"
+                "required_approvals,created_at,published_at"
+            )
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+        )
+        if proposal_id:
+            query = query.eq("id", str(uuid.UUID(proposal_id))).limit(1)
+        else:
+            query = query.eq("status", "pending")
+            range_method = getattr(query, "range", None)
+            if callable(range_method):
+                query = range_method(offset, offset + page_size - 1)
+            else:
+                query = query.limit(offset + page_size)
+        proposals = query.execute().data or []
+        if not proposal_id and not callable(range_method):
+            proposals = proposals[offset:offset + page_size]
+
+        proposal_ids = [row["id"] for row in proposals]
+        creator_ids = {
+            row.get("created_by_user_id")
+            for row in proposals
+            if row.get("created_by_user_id")
+        }
+        approvals = []
+        if proposal_ids:
+            approvals = (
+                admin_sb.table("shared_memory_proposal_approvals")
+                .select("proposal_id,approver_user_id")
+                .in_("proposal_id", proposal_ids)
+                .execute()
+                .data
+                or []
+            )
+        profiles = []
+        if creator_ids:
+            profiles = (
+                admin_sb.table("account_profiles")
+                .select("id,username")
+                .in_("id", list(creator_ids))
+                .execute()
+                .data
+                or []
+            )
+    except Exception as exc:
+        logger.exception("Failed to load shared-memory proposals")
+        if needs_security_migration(exc):
+            raise HTTPException(503, SHARED_APPROVAL_MIGRATION_MESSAGE)
+        raise HTTPException(502, "공유 기억 승인 목록을 불러오지 못했습니다.")
+
+    username_by_id = {row.get("id"): row.get("username") for row in profiles}
+    approvers_by_proposal: dict[str, set[str]] = {}
+    for approval in approvals:
+        approvers_by_proposal.setdefault(
+            approval.get("proposal_id"), set()
+        ).add(approval.get("approver_user_id"))
+
+    result = []
+    for proposal in proposals:
+        approvers = approvers_by_proposal.get(proposal["id"], set())
+        approved_by_me = user["id"] in approvers
+        status = proposal.get("status") or "pending"
+        result.append({
+            **proposal,
+            "created_by_username": username_by_id.get(
+                proposal.get("created_by_user_id"), "unknown"
+            ),
+            "approval_count": len(approvers),
+            "required_approvals": int(proposal.get("required_approvals") or 2),
+            "approved_by_me": approved_by_me,
+            "can_approve": status == "pending" and not approved_by_me,
+        })
+    return result
+
+
+@app.get("/api/shared-memory-proposals")
+def list_shared_memory_proposals(
+    request: Request,
+    limit: int = 100,
+    offset: int = 0,
+):
+    if limit < 1 or limit > 100:
+        raise HTTPException(422, "limit은 1 이상 100 이하여야 합니다.")
+    if offset < 0:
+        raise HTTPException(422, "offset은 0 이상이어야 합니다.")
+    user = current_user(request)
+    page = load_shared_proposals(
+        user,
+        page_size=limit + 1,
+        offset=offset,
+    )
+    has_more = len(page) > limit
+    proposals = page[:limit]
+    return {
+        "proposals": proposals,
+        "has_more": has_more,
+        "next_offset": offset + limit if has_more else None,
+    }
+
+
+@app.post("/api/shared-memory-proposals/{proposal_id}/approve")
+def approve_shared_memory_proposal(proposal_id: str, request: Request):
+    user = current_user(request)
+    try:
+        normalized_proposal_id = str(uuid.UUID(proposal_id))
+    except ValueError:
+        raise HTTPException(404, "공유 기억 제안을 찾지 못했습니다.")
+
+    approval = approve_shared_proposal(current_db(request), normalized_proposal_id)
+    published = bool(approval.get("published"))
+    if published:
+        invalidate_catalog_cache()
+
+    proposals = load_shared_proposals(user, normalized_proposal_id)
+    if not proposals:
+        raise HTTPException(404, "공유 기억 제안을 찾지 못했습니다.")
+    proposal = proposals[0]
+    proposal["published"] = published
+
+    return proposal
 
 
 def all_tags(rows: list[dict]) -> dict[str, int]:
@@ -1310,7 +1959,7 @@ def prepare_answer(req: AskRequest, db, user: dict) -> dict:
     def describe(h: dict) -> str:
         meta = effective_metadata(h)
         parts = [
-            f"범위={'개인' if h.get('scope') == 'personal' else '공유'}",
+            f"범위={'개인기억' if h.get('scope') == 'personal' else '모두의 기억'}",
             f"유형={normalize_source(h.get('source'))}",
         ]
         labels = {
@@ -1368,7 +2017,19 @@ def prepare_answer(req: AskRequest, db, user: dict) -> dict:
 @app.post("/api/ask")
 def ask(req: AskRequest, request: Request):
     user = current_user(request)
-    prepared = prepare_answer(req, current_db(request), user)
+    db = current_db(request)
+    remaining_uses = consume_ai_use(user["id"])
+    try:
+        result = ask_with_consumed_use(req, user, db)
+    except Exception:
+        refund_ai_use_after_failure(user["id"], remaining_uses)
+        raise
+    result["remaining_uses"] = remaining_uses
+    return result
+
+
+def ask_with_consumed_use(req: AskRequest, user: dict, db) -> dict:
+    prepared = prepare_answer(req, db, user)
     answer = prepared["fallback"]
     if answer is None:
         resp = oai.chat.completions.create(
@@ -1397,7 +2058,13 @@ def stream_event(event_type: str, **payload: object) -> str:
 @app.post("/api/ask/stream")
 def ask_stream(req: AskRequest, request: Request):
     user = current_user(request)
-    prepared = prepare_answer(req, current_db(request), user)
+    db = current_db(request)
+    remaining_uses = consume_ai_use(user["id"])
+    try:
+        prepared = prepare_answer(req, db, user)
+    except Exception:
+        refund_ai_use_after_failure(user["id"], remaining_uses)
+        raise
     write_audit(
         user["username"], user["role"], "memory_ask",
         actor_user_id=user["id"],
@@ -1405,39 +2072,71 @@ def ask_stream(req: AskRequest, request: Request):
     )
 
     def generate():
-        yield stream_event(
-            "meta",
-            resolved_question=prepared["resolved_question"],
-            sources=prepared["sources"],
-        )
+        completed = False
+        refunded = False
+        refunded_remaining = remaining_uses
 
-        if prepared["fallback"] is not None:
-            yield stream_event("delta", content=prepared["fallback"])
-            yield stream_event("done")
-            return
+        def refund_once() -> int:
+            nonlocal refunded, refunded_remaining
+            if not refunded:
+                refunded = True
+                refunded_remaining = refund_ai_use_after_failure(
+                    user["id"], remaining_uses
+                )
+            return refunded_remaining
 
         try:
-            stream = oai.chat.completions.create(
-                model=CHAT_MODEL,
-                max_tokens=1500,
-                messages=prepared["messages"],
-                stream=True,
+            yield stream_event(
+                "meta",
+                resolved_question=prepared["resolved_question"],
+                sources=prepared["sources"],
+                remaining_uses=remaining_uses,
             )
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                content = chunk.choices[0].delta.content or ""
-                if content:
-                    yield stream_event("delta", content=content)
-        except Exception:
-            logger.exception("Failed to stream answer")
-            yield stream_event("error", detail="AI 답변 생성 중 연결이 끊어졌습니다.")
-            return
 
-        yield stream_event("done")
+            if prepared["fallback"] is not None:
+                yield stream_event("delta", content=prepared["fallback"])
+                completed = True
+                yield stream_event("done")
+                return
+
+            try:
+                stream = oai.chat.completions.create(
+                    model=CHAT_MODEL,
+                    max_tokens=1500,
+                    messages=prepared["messages"],
+                    stream=True,
+                )
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    content = chunk.choices[0].delta.content or ""
+                    if content:
+                        yield stream_event("delta", content=content)
+            except Exception:
+                logger.exception("Failed to stream answer")
+                yield stream_event(
+                    "error",
+                    detail="AI 답변 생성 중 연결이 끊어졌습니다.",
+                    remaining_uses=refund_once(),
+                )
+                return
+
+            completed = True
+            yield stream_event("done")
+        finally:
+            if not completed:
+                refund_once()
+
+    async def generate_with_cleanup():
+        iterator = generate()
+        try:
+            async for chunk in iterate_in_threadpool(iterator):
+                yield chunk
+        finally:
+            await run_in_threadpool(iterator.close)
 
     return StreamingResponse(
-        generate(),
+        generate_with_cleanup(),
         media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -1451,13 +2150,7 @@ def memory_can_modify(item: dict, user: dict) -> bool:
         return False
     if item.get("scope") == "personal":
         return item.get("owner_user_id") == user.get("id")
-    return (
-        item.get("scope") in {None, "shared"}
-        and (
-            user.get("role") == "admin"
-            or item.get("created_by_user_id") == user.get("id")
-        )
-    )
+    return item.get("scope") in {None, "shared"} and user.get("role") == "admin"
 
 
 @app.get("/api/memories")
@@ -1523,7 +2216,8 @@ def list_memories(
             db.table("memories")
             .select(
                 "id,source,content,metadata,created_at,expires_at,scope,"
-                "owner_user_id,created_by_user_id",
+                "owner_user_id,created_by_user_id,publication_status,"
+                "proposal_id,approved_at",
                 count="exact",
             )
             .order("created_at", desc=True)
@@ -1555,6 +2249,7 @@ def list_memories(
         {
             **item,
             "scope": "personal" if item.get("scope") == "personal" else "shared",
+            "publication_status": item.get("publication_status") or "published",
             "can_edit": memory_can_modify(item, user),
             "can_delete": memory_can_modify(item, user),
         }
@@ -1591,6 +2286,7 @@ def delete_expired(request: Request):
         admin_sb.table("memories")
         .delete()
         .eq("scope", "shared")
+        .eq("publication_status", "published")
         .lt("expires_at", now)
         .execute()
     )
@@ -1632,7 +2328,8 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
         db.table("memories")
         .select(
             "id,source,content,metadata,created_at,expires_at,scope,"
-            "owner_user_id,created_by_user_id"
+            "owner_user_id,created_by_user_id,publication_status,"
+            "proposal_id,approved_at"
         )
         .eq("id", memory_id)
         .limit(1)
@@ -1660,6 +2357,7 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
         if isinstance(tag, str) and tag.strip()
     ][:8] if isinstance(raw_tags, list) else []
 
+    remaining_uses = consume_ai_use(user["id"])
     try:
         vector = embed([content])[0]
         source = normalize_source(existing[0].get("source"))
@@ -1689,6 +2387,7 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
             raise HTTPException(404, "수정할 기억을 찾지 못했습니다.")
         invalidate_catalog_cache()
     except Exception as exc:
+        refund_ai_use_after_failure(user["id"], remaining_uses)
         logger.exception("Failed to update memory")
         if isinstance(exc, HTTPException):
             raise
@@ -1702,7 +2401,11 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
         user["username"], user["role"], "memory_update",
         actor_user_id=user["id"], memory_id=memory_id,
     )
-    return (result.data or [{"id": memory_id, "content": content, "metadata": meta}])[0]
+    response_data = dict(
+        (result.data or [{"id": memory_id, "content": content, "metadata": meta}])[0]
+    )
+    response_data["remaining_uses"] = remaining_uses
+    return response_data
 
 
 @app.delete("/api/memories/{memory_id}")
@@ -1768,5 +2471,6 @@ def index():
 
 
 @app.get("/auth-architecture")
-def auth_architecture():
+def auth_architecture(request: Request):
+    require_admin_user(request)
     return FileResponse("static/auth-architecture.html")
