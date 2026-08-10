@@ -2829,6 +2829,42 @@ def test_shared_approval_schema_is_included_for_fresh_installations():
         assert not re.search(r"(?m)^\s*(?:\+--|\*\*\*)", sql)
 
 
+def test_unhandled_shared_approval_schema_error_returns_migration_guidance():
+    request = _request("GET", "/api/memories")
+    error = RuntimeError("column memories.publication_status does not exist")
+
+    response = asyncio.run(main.unhandled_exception_handler(request, error))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {
+        "detail": main.SHARED_APPROVAL_MIGRATION_MESSAGE,
+    }
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_unhandled_memory_scope_error_returns_base_migration_guidance():
+    request = _request("GET", "/api/memories")
+    error = RuntimeError("column memories.scope does not exist")
+
+    response = asyncio.run(main.unhandled_exception_handler(request, error))
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"detail": main.MEMORY_MIGRATION_MESSAGE}
+
+
+def test_unhandled_unknown_error_keeps_generic_message():
+    request = _request("GET", "/api/memories")
+
+    response = asyncio.run(
+        main.unhandled_exception_handler(request, RuntimeError("unexpected"))
+    )
+
+    assert response.status_code == 500
+    assert json.loads(response.body) == {
+        "detail": "서버 처리 중 오류가 발생했습니다.",
+    }
+
+
 def test_admin_duplicate_approval_still_audits_actual_publish_transition():
     root = Path(__file__).resolve().parents[1]
     for filename in ("migration_shared_memory_approvals.sql", "schema.sql"):

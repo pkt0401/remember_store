@@ -328,9 +328,26 @@ def needs_security_migration(exc: Exception) -> bool:
             "actor_user_id",
             "owner_user_id",
             "created_by_user_id",
+            "memories.scope",
             "query_scope",
             "account_profiles",
             "publication_status",
+            "shared_memory_proposals",
+            "shared_memory_proposal_approvals",
+            "approve_shared_memory_proposal",
+            "create_shared_memory_proposal",
+        )
+    )
+
+
+def needs_shared_approval_migration(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        name in message
+        for name in (
+            "publication_status",
+            "proposal_id",
+            "approved_at",
             "shared_memory_proposals",
             "shared_memory_proposal_approvals",
             "approve_shared_memory_proposal",
@@ -966,8 +983,24 @@ def healthz():
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled request error at %s", request.url.path, exc_info=exc)
-    return add_security_headers(
-        JSONResponse({"detail": "서버 처리 중 오류가 발생했습니다."}, status_code=500)
+    if needs_shared_approval_migration(exc):
+        status_code = 503
+        detail = SHARED_APPROVAL_MIGRATION_MESSAGE
+    elif needs_ai_usage_migration(exc):
+        status_code = 503
+        detail = AI_USAGE_MIGRATION_MESSAGE
+    elif needs_security_migration(exc):
+        status_code = 503
+        detail = MEMORY_MIGRATION_MESSAGE
+    else:
+        status_code = 500
+        detail = "서버 처리 중 오류가 발생했습니다."
+
+    response = JSONResponse({"detail": detail}, status_code=status_code)
+    return (
+        add_api_security_headers(response)
+        if request.url.path.startswith("/api/")
+        else add_security_headers(response)
     )
 
 
