@@ -547,7 +547,7 @@
   <section>
     <div class="panel role-hidden" id="ingestPanel">
       <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
-      <textarea id="pasteBox" placeholder="Slack 스레드, 메일 본문, 또는 그냥 메모를 여기에 붙여넣기&#10;&#10;예)&#10;김철수  오후 2:31&#10;다음주 배포는 수요일로 확정입니다&#10;박영희  오후 2:33&#10;스테이징 검증은 화요일까지 완료할게요"></textarea>
+      <textarea id="pasteBox" placeholder="업무 가이드, 일정, 메일 또는 메모를 여기에 붙여넣기&#10;&#10;예) 법인카드 사용 방식&#10;- 인당 월 8만원 한도 내에서 사용&#10;- 4만원: 개인 식사 시 사용(가급적 파트 구성원과 함께 사용)&#10;- 4만원: 월 1회 파트 점심 또는 저녁식사 시 사용&#10;- 사용 후 적요에 [AI Talent] 내용을 입력해 정산&#10;  예: [AI Talent] 파트 점심식사"></textarea>
       <div id="saveResult" role="status" aria-live="polite"></div>
       <div class="scope-row">
         <fieldset class="scope-picker" aria-describedby="memoryScopeHelp">
@@ -617,7 +617,7 @@
       <div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>
     </div>
     <div class="ask-bar">
-      <input id="askBox" placeholder="예: 다음주 배포 일정이 언제였지?" onkeydown="if(event.key==='Enter')ask()">
+      <input id="askBox" placeholder="예: 법인카드는 어떻게 사용하고 정산하면 돼?" onkeydown="if(event.key==='Enter')ask()">
       <button id="askBtn" onclick="ask()">질문</button>
     </div>
   </section>
