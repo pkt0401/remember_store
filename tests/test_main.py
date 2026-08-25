@@ -1404,6 +1404,166 @@ def test_normalize_parsed_payload_chunks_long_fallback():
     assert all(record["tags"] == [] for record in payload["records"])
 
 
+def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
+    monkeypatch,
+):
+    text = """[기록 유형] 업무
+[카테고리] 비용 처리 가이드
+[제목] 2026년 8월 ATL AI 도구 사용료 처리
+
+[적용월] 2026년 8월
+[확인자] 권민정 매니저
+[프로젝트 코드] 41000069-001
+[프로젝트명] 26년 AI Talent Lab 운영
+[비용 계정] CL/AI
+
+[내용]
+이번 달 ATL 관련 AI 도구 사용료는 위 프로젝트와 비용 계정으로 처리합니다.
+
+[키워드] ATL, AI 도구 사용료, 비용 처리, 41000069-001, CL/AI"""
+    model_payload = {
+        "source": "note",
+        "records": [{
+            # Reproduce the lossy model response that originally discarded the
+            # structured project code and cost account fields.
+            "content": (
+                "이번 달 ATL 관련 AI 도구 사용료는 위 프로젝트와 "
+                "비용 계정으로 처리합니다."
+            ),
+            "metadata": {
+                "record_type": "work",
+                "category": "비용 처리 가이드",
+                "project": "26년 AI Talent Lab 운영",
+            },
+            "expires_at": None,
+            "tags": ["ATL"],
+        }],
+    }
+
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps(model_payload))
+            )])
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions())),
+    )
+
+    parsed = main.parse_pasted_text(text)
+
+    assert parsed["source"] == "note"
+    assert len(parsed["records"]) == 1
+    record = parsed["records"][0]
+    assert record["content"] == text
+    assert "[프로젝트 코드] 41000069-001" in record["content"]
+    assert "[비용 계정] CL/AI" in record["content"]
+    assert record["metadata"]["project_code"] == "41000069-001"
+    assert record["metadata"]["expense_account"] == "CL/AI"
+    assert record["metadata"]["applicable_month"] == "2026년 8월"
+    assert record["tags"] == [
+        "ATL",
+        "AI 도구 사용료",
+        "비용 처리",
+        "41000069-001",
+        "CL/AI",
+    ]
+
+
+def test_structured_field_value_changes_ingest_content_hash(monkeypatch):
+    base_text = """[기록 유형] 업무
+[제목] 2026년 8월 ATL AI 도구 사용료 처리
+[프로젝트 코드] 41000069-001
+[비용 계정] {cost_account}
+[내용]
+이번 달 ATL 관련 AI 도구 사용료를 지정 계정으로 처리합니다.
+[키워드] ATL, AI 도구 사용료, 비용 처리, 41000069-001, {cost_account}"""
+    model_payload = {
+        "source": "note",
+        "records": [{
+            "content": "이번 달 ATL 관련 AI 도구 사용료를 지정 계정으로 처리합니다.",
+            "metadata": {"record_type": "work"},
+            "expires_at": None,
+            "tags": ["ATL"],
+        }],
+    }
+
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content=json.dumps(model_payload))
+            )])
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions())),
+    )
+    monkeypatch.setattr(main, "embed", lambda texts: [[0.1] for _ in texts])
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    rows = []
+    for cost_account in ("CL/AI", "CL/OPEX"):
+        db = _MemoryClient()
+        main.ingest_with_consumed_use(
+            main.IngestRequest(
+                text=base_text.format(cost_account=cost_account),
+                scope="personal",
+                allow_similar=True,
+            ),
+            _user(),
+            db,
+        )
+        rows.append(db.upserts[0]["rows"][0])
+
+    assert rows[0]["content_hash"] != rows[1]["content_hash"]
+    assert "[비용 계정] CL/AI" in rows[0]["content"]
+    assert "[비용 계정] CL/OPEX" in rows[1]["content"]
+    assert rows[0]["metadata"]["tags"] == [
+        "ATL",
+        "AI 도구 사용료",
+        "비용 처리",
+        "41000069-001",
+        "CL/AI",
+    ]
+
+
+def test_ingest_keeps_at_most_eight_tags(monkeypatch):
+    db = _MemoryClient()
+    monkeypatch.setattr(
+        main,
+        "parse_pasted_text",
+        lambda _text: {
+            "source": "note",
+            "records": [{
+                "content": "tag limit memory",
+                "metadata": {},
+                "tags": [f"tag-{index}" for index in range(1, 10)],
+                "expires_at": None,
+            }],
+        },
+    )
+    monkeypatch.setattr(main, "embed", lambda texts: [[0.1] for _ in texts])
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    main.ingest_with_consumed_use(
+        main.IngestRequest(
+            text="tag limit memory",
+            scope="personal",
+            allow_similar=True,
+        ),
+        _user(),
+        db,
+    )
+
+    assert db.upserts[0]["rows"][0]["metadata"]["tags"] == [
+        "tag-1", "tag-2", "tag-3", "tag-4",
+        "tag-5", "tag-6", "tag-7", "tag-8",
+    ]
+
+
 def test_personal_ingest_sets_owner_creator_and_published_state(monkeypatch):
     scope = "personal"
     expected_owner = ALICE_ID
@@ -2898,6 +3058,145 @@ def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup():
 
     assert exc_info.value.status_code == 400
     assert "API 키" in exc_info.value.detail
+
+
+def test_contextualize_search_question_rewrites_generic_detail_followup(monkeypatch):
+    calls = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="ATL AI 도구 사용료의 프로젝트 코드와 비용 계정을 구체적으로 알려줘"
+                )
+            )])
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions())),
+    )
+
+    resolved = main.contextualize_search_question(
+        "구체적으로 알려줘",
+        [
+            {"role": "user", "content": "AI 도구 사용처리 어떻게 해?"},
+            {"role": "assistant", "content": "저장된 내용을 바탕으로 처리합니다."},
+        ],
+    )
+
+    assert resolved == (
+        "ATL AI 도구 사용료의 프로젝트 코드와 비용 계정을 구체적으로 알려줘"
+    )
+    assert len(calls) == 1
+    assert calls[0]["messages"][-1] == {
+        "role": "user",
+        "content": "구체적으로 알려줘",
+    }
+    assert {
+        "role": "user",
+        "content": "AI 도구 사용처리 어떻게 해?",
+    } in calls[0]["messages"]
+
+
+def test_contextualize_search_question_uses_prior_question_when_rewrite_fails(
+    monkeypatch,
+):
+    class FailedCompletions:
+        def create(self, **_kwargs):
+            raise RuntimeError("rewrite unavailable")
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=FailedCompletions())),
+    )
+
+    resolved = main.contextualize_search_question(
+        "구체적으로 알려줘",
+        [{"role": "user", "content": "AI 도구 사용처리 어떻게 해?"}],
+    )
+
+    assert resolved == (
+        "AI 도구 사용처리 어떻게 해? / 후속 요청: 구체적으로 알려줘"
+    )
+
+
+def test_contextualize_search_question_does_not_rewrite_independent_question(
+    monkeypatch,
+):
+    class UnexpectedCompletions:
+        def create(self, **_kwargs):
+            pytest.fail("an independent question must not invoke the rewrite model")
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=UnexpectedCompletions())),
+    )
+    question = "ATL AI 도구 사용료의 프로젝트 코드와 비용 계정을 구체적으로 알려줘"
+
+    resolved = main.contextualize_search_question(
+        question,
+        [{"role": "user", "content": "법인카드 사용법 알려줘"}],
+    )
+
+    assert resolved == question
+
+
+def test_prepare_answer_uses_resolved_followup_for_search_and_answer_prompt(
+    monkeypatch,
+):
+    original_question = "구체적으로 알려줘"
+    resolved_question = (
+        "ATL AI 도구 사용료의 프로젝트 코드와 비용 계정을 구체적으로 알려줘"
+    )
+    memory = _memory(
+        "atl-ai-tool-expense",
+        content=(
+            "이번 달 ATL 관련 AI 도구 사용료는 프로젝트 "
+            "41000069-001/26년 AI Talent Lab 운영, 계정 CL/AI로 처리합니다."
+        ),
+    )
+
+    monkeypatch.setattr(
+        main,
+        "contextualize_search_question",
+        lambda question, history: (
+            resolved_question
+            if question == original_question and history
+            else pytest.fail("the follow-up history was not forwarded")
+        ),
+    )
+    monkeypatch.setattr(main, "memory_catalog", lambda _db, _user_id: [memory])
+    monkeypatch.setattr(
+        main,
+        "embed",
+        lambda _texts: pytest.fail("lexical follow-up retrieval should be sufficient"),
+    )
+
+    prepared = main.prepare_answer(
+        main.AskRequest(
+            question=original_question,
+            history=[
+                {"role": "user", "content": "AI 도구 사용처리 어떻게 해?"},
+                {"role": "assistant", "content": "저장된 기준으로 처리합니다."},
+            ],
+        ),
+        object(),
+        _user(),
+    )
+
+    assert prepared["resolved_question"] == resolved_question
+    assert [source["id"] for source in prepared["sources"]] == [
+        "atl-ai-tool-expense"
+    ]
+    final_prompt = prepared["messages"][-1]["content"]
+    assert f"질문: {resolved_question}" in final_prompt
+    assert f"질문: {original_question}" not in final_prompt
+    assert "41000069-001/26년 AI Talent Lab 운영" in final_prompt
+    assert "CL/AI" in final_prompt
 
 
 def test_prepare_answer_searches_shared_plus_requesting_users_personal_memories(monkeypatch):
