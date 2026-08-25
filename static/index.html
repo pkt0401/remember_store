@@ -126,6 +126,48 @@
   }
   .save-err { background: #F7E4E1; color: #8C3B2E; }
 
+  /* ---- similar-memory confirmation ---- */
+  #similarMemoryOverlay {
+    display: none; position: fixed; inset: 0; z-index: 30;
+    background: rgba(23, 33, 29, .45); align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  #similarMemoryOverlay.show { display: flex; }
+  .similar-memory-dialog {
+    width: min(680px, 100%); max-height: calc(100vh - 40px); overflow: hidden;
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    display: flex; flex-direction: column;
+  }
+  .similar-memory-intro {
+    padding: 13px 18px; border-bottom: 1px solid var(--line);
+    color: var(--ink-soft); font-size: 12.5px; line-height: 1.55;
+  }
+  .similar-memory-list { overflow-y: auto; }
+  .similar-memory-item { padding: 13px 18px; border-bottom: 1px solid var(--line); }
+  .similar-memory-labels { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
+  .similar-memory-score {
+    padding: 2px 6px; border-radius: 4px; background: var(--amber-soft);
+    color: var(--amber); font-size: 10px; font-weight: 700;
+  }
+  .similar-memory-content {
+    color: var(--ink); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
+  .similar-memory-meta { margin-top: 6px; color: var(--ink-soft); font-size: 11px; }
+  .similar-memory-actions {
+    display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px;
+  }
+  .similar-memory-actions button {
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px;
+    font-size: 12px; font-weight: 650; cursor: pointer;
+  }
+  .similar-memory-actions .cancel { background: #fff; color: var(--ink-soft); }
+  .similar-memory-actions .confirm {
+    background: var(--pine); border-color: var(--pine); color: #fff;
+  }
+  .similar-memory-actions button:disabled { opacity: .55; cursor: wait; }
+
   /* ---- recent list ---- */
   #recent { margin-top: 20px; }
   .mem {
@@ -140,6 +182,7 @@
     cursor: pointer; font-size: 15px; padding: 2px 4px;
   }
   .mem button:hover { color: #8C3B2E; }
+  .mem button:disabled { opacity: .5; cursor: wait; }
   .mem-actions { display: flex; flex-direction: column; gap: 3px; }
   .mem-actions button.edit:hover { color: var(--pine); }
   .mem-labels {
@@ -160,6 +203,7 @@
   .scope-badge.personal { background: var(--amber-soft); color: var(--amber); }
   .scope-badge.shared { background: var(--pine-soft); color: var(--pine); }
   .scope-badge.pending { background: var(--slate-soft); color: var(--slate); }
+  .scope-badge.deletion { background: #F7E4E1; color: #8C3B2E; }
   .mem.expired .txt { color: #A6B0AC; }
   .badge-exp {
     font-family: var(--mono); font-size: 10px; font-weight: 700;
@@ -248,7 +292,7 @@
   }
 
   /* ---- shared-memory approvals ---- */
-  #sharedApprovalPanel { margin-top: 20px; }
+  #sharedApprovalPanel, #sharedDeletionApprovalPanel { margin-top: 20px; }
   .approval-rule {
     padding: 10px 18px; border-bottom: 1px solid var(--line);
     background: #FAFBFA; color: var(--ink-soft); font-size: 11.5px; line-height: 1.5;
@@ -289,6 +333,12 @@
   .approval-feedback { display: none; border-top: 1px solid var(--line); color: var(--pine); }
   .approval-feedback.show { display: block; }
   .approval-feedback.error { color: #8C3B2E; }
+  .mem-actions button.delete-request {
+    border: 1px solid #D8B7B1; border-radius: 5px; padding: 4px 6px;
+    color: #8C3B2E; font-size: 10.5px; font-weight: 650; line-height: 1.2;
+    white-space: nowrap;
+  }
+  .mem-actions button.delete-request:hover { background: #F7E4E1; color: #8C3B2E; }
 
   /* ---- login ---- */
   #loginOverlay {
@@ -472,6 +522,7 @@
     .scope-row { grid-template-columns: 1fr; gap: 6px; }
     .approval-item { grid-template-columns: 1fr; }
     .approval-action { min-width: 0; text-align: left; }
+    .similar-memory-actions { display: grid; grid-template-columns: 1fr 1fr; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .msg { animation: rise .18s ease-out; }
@@ -488,8 +539,9 @@
     <p>내 기억과 모두의 기억을 안전하게 사용하세요</p>
     <div class="auth-tabs" role="tablist" aria-label="계정 메뉴">
       <button class="auth-tab" type="button" id="loginTab" role="tab" aria-controls="loginForm" aria-selected="true">로그인</button>
-      <button class="auth-tab" type="button" id="signupTab" role="tab" aria-controls="signupForm" aria-selected="false" tabindex="-1">회원가입</button>
+      <button class="auth-tab" type="button" id="signupTab" role="tab" aria-controls="signupForm" aria-selected="false" tabindex="-1" hidden>회원가입</button>
     </div>
+    <div class="auth-note" id="signupClosedNote" hidden>관리자에게 발급받은 계정으로 로그인하세요.</div>
 
     <form class="auth-form" id="loginForm" role="tabpanel" aria-labelledby="loginTab">
       <div class="auth-field">
@@ -547,7 +599,7 @@
   <section>
     <div class="panel role-hidden" id="ingestPanel">
       <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
-      <textarea id="pasteBox" placeholder="업무 가이드, 일정, 메일 또는 메모를 여기에 붙여넣기&#10;&#10;예) 법인카드 사용 방식&#10;- 인당 월 8만원 한도 내에서 사용&#10;- 4만원: 개인 식사 시 사용(가급적 파트 구성원과 함께 사용)&#10;- 4만원: 월 1회 파트 점심 또는 저녁식사 시 사용&#10;- 사용 후 적요에 [AI Talent] 내용을 입력해 정산&#10;  예: [AI Talent] 파트 점심식사"></textarea>
+      <textarea id="pasteBox" placeholder="업무 가이드, 일정, 메일 또는 메모를 여기에 붙여넣기&#10;&#10;예) 식대에서 법인카드 사용 방식&#10;- 인당 월 8만원 한도 내에서 사용&#10;- 4만원: 개인 식사 시 사용(가급적 파트 구성원과 함께 사용)&#10;- 4만원: 월 1회 파트 점심 또는 저녁식사 시 사용&#10;- 사용 후 적요에 [AI Talent] 내용을 입력해 정산&#10;  예: [AI Talent] 파트 점심식사"></textarea>
       <div id="saveResult" role="status" aria-live="polite"></div>
       <div class="scope-row">
         <fieldset class="scope-picker" aria-describedby="memoryScopeHelp">
@@ -577,6 +629,22 @@
         <button id="sharedApprovalMoreBtn" type="button">더 보기</button>
       </div>
       <div class="approval-feedback" id="sharedApprovalFeedback" role="status" aria-live="polite"></div>
+    </div>
+
+    <div class="panel role-hidden" id="sharedDeletionApprovalPanel" aria-labelledby="sharedDeletionApprovalTitle">
+      <div class="panel-head">
+        <b id="sharedDeletionApprovalTitle">모두의 기억 삭제 승인</b>
+        <div class="approval-head-actions">
+          <span id="sharedDeletionApprovalCount" role="status" aria-live="polite"></span>
+          <button class="approval-refresh" id="sharedDeletionApprovalRefresh" type="button" title="삭제 승인 대기 새로고침" aria-label="삭제 승인 대기 새로고침">↻</button>
+        </div>
+      </div>
+      <p class="approval-rule" id="sharedDeletionApprovalRule">요청자를 포함한 2명이 동의하면 모두의 기억에서 삭제됩니다.</p>
+      <div class="approval-list" id="sharedDeletionApprovalList" aria-busy="false"></div>
+      <div class="more-wrap" id="sharedDeletionApprovalMoreWrap" style="display:none">
+        <button id="sharedDeletionApprovalMoreBtn" type="button">더 보기</button>
+      </div>
+      <div class="approval-feedback" id="sharedDeletionApprovalFeedback" role="status" aria-live="polite"></div>
     </div>
 
     <div class="panel" id="recent">
@@ -617,11 +685,26 @@
       <div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>
     </div>
     <div class="ask-bar">
-      <input id="askBox" placeholder="예: 법인카드는 어떻게 사용하고 정산하면 돼?" onkeydown="if(event.key==='Enter')ask()">
+      <input id="askBox" placeholder="예: 식대에서 법인카드는 어떻게 사용하고 정산하면 돼?" onkeydown="if(event.key==='Enter')ask()">
       <button id="askBtn" onclick="ask()">질문</button>
     </div>
   </section>
 </main>
+
+<div id="similarMemoryOverlay" aria-hidden="true" onclick="if(event.target===this)closeSimilarMemoryDialog()">
+  <div class="similar-memory-dialog" role="dialog" aria-modal="true" aria-labelledby="similarMemoryTitle" aria-describedby="similarMemoryDescription">
+    <div class="panel-head">
+      <b id="similarMemoryTitle">유사한 기억이 있습니다</b>
+      <button type="button" class="dialog-close" aria-label="유사 기억 확인 닫기" onclick="closeSimilarMemoryDialog()">×</button>
+    </div>
+    <p class="similar-memory-intro" id="similarMemoryDescription">이미 저장된 내용과 비슷한 사례를 찾았습니다. 내용을 확인한 뒤 그래도 저장하시겠습니까?</p>
+    <div class="similar-memory-list" id="similarMemoryList"></div>
+    <div class="similar-memory-actions">
+      <button type="button" class="cancel" id="similarMemoryCancelBtn" onclick="closeSimilarMemoryDialog()">취소</button>
+      <button type="button" class="confirm" id="similarMemoryConfirmBtn" onclick="confirmSimilarMemorySave()">그래도 저장</button>
+    </div>
+  </div>
+</div>
 
 <div id="editOverlay" onclick="if(event.target===this)closeEdit()">
   <div class="edit-dialog" role="dialog" aria-modal="true" aria-labelledby="editTitle">
@@ -776,26 +859,119 @@ function showSaveResult(message, isError = false) {
   result.appendChild(notice);
 }
 
-async function ingest() {
-  if (!canWrite()) return;
-  const text = $("pasteBox").value.trim();
+let pendingSimilarIngest = null;
+let ingestBusy = false;
+
+function renderSimilarMemories(memories) {
+  const list = $("similarMemoryList");
+  const fragment = document.createDocumentFragment();
+  memories.slice(0, 3).forEach(memory => {
+    const item = document.createElement("div");
+    item.className = "similar-memory-item";
+
+    const labels = document.createElement("div");
+    labels.className = "similar-memory-labels";
+    const scope = memoryScopeInfo(memory.scope);
+    const scopeBadge = document.createElement("span");
+    scopeBadge.className = `scope-badge ${scope.key}`;
+    scopeBadge.textContent = scope.label;
+    labels.appendChild(scopeBadge);
+
+    const sourceBadge = document.createElement("span");
+    sourceBadge.className = `chip ${sourceKey(memory.source)}`;
+    sourceBadge.textContent = sourceLabel(memory.source);
+    labels.appendChild(sourceBadge);
+
+    const score = document.createElement("span");
+    score.className = "similar-memory-score";
+    score.textContent = `유사도 ${Math.round((Number(memory.similarity) || 0) * 100)}%`;
+    labels.appendChild(score);
+
+    const content = document.createElement("div");
+    content.className = "similar-memory-content";
+    content.textContent = String(memory.snippet || "내용 없음");
+
+    const metadata = memory.metadata && typeof memory.metadata === "object"
+      ? memory.metadata : {};
+    const savedDate = String(metadata.work_date || memory.created_at || "").slice(0, 10);
+    const metaParts = [metadata.project, metadata.person, savedDate].filter(Boolean);
+    const meta = document.createElement("div");
+    meta.className = "similar-memory-meta";
+    meta.textContent = metaParts.join(" · ");
+
+    item.append(labels, content);
+    if (metaParts.length) item.appendChild(meta);
+    fragment.appendChild(item);
+  });
+  list.replaceChildren(fragment);
+}
+
+function openSimilarMemoryDialog(memories, pending) {
+  pendingSimilarIngest = pending;
+  renderSimilarMemories(memories);
+  const overlay = $("similarMemoryOverlay");
+  overlay.classList.add("show");
+  overlay.setAttribute("aria-hidden", "false");
+  setAppInert(true);
+  requestAnimationFrame(() => $("similarMemoryCancelBtn").focus());
+}
+
+function closeSimilarMemoryDialog(returnFocus = true) {
+  pendingSimilarIngest = null;
+  const overlay = $("similarMemoryOverlay");
+  overlay.classList.remove("show");
+  overlay.setAttribute("aria-hidden", "true");
+  $("similarMemoryList").replaceChildren();
+  const loginVisible = $("loginOverlay").classList.contains("show");
+  setAppInert(loginVisible);
+  if (returnFocus && currentSession) $("saveBtn").focus();
+}
+
+async function confirmSimilarMemorySave() {
+  const pending = pendingSimilarIngest;
+  if (!pending || ingestBusy) return;
+  closeSimilarMemoryDialog(false);
+  await ingest({ pending, allowSimilar: true });
+}
+
+async function ingest(options = {}) {
+  if (!canWrite() || ingestBusy) return;
+  const pending = options.pending && typeof options.pending === "object"
+    ? options.pending : null;
+  const text = String(pending ? pending.text : $("pasteBox").value).trim();
   if (!text) return;
-  const scope = selectedMemoryScope();
+  const scope = pending && pending.scope === "shared" ? "shared" :
+    pending ? "personal" : selectedMemoryScope();
+  const allowSimilar = options.allowSimilar === true;
   const btn = $("saveBtn");
+  ingestBusy = true;
   btn.disabled = true;
-  btn.textContent = scope === "shared" ? "처리 중…" : "저장 중…";
+  btn.textContent = allowSimilar
+    ? (scope === "shared" ? "처리 중…" : "저장 중…")
+    : "유사 기억 확인 중…";
   showSaveResult("");
   try {
     const r = await apiFetch("/api/ingest", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, scope })
+      body: JSON.stringify({ text, scope, allow_similar: allowSimilar })
     });
     const contentType = r.headers.get("content-type") || "";
     const d = contentType.includes("application/json")
       ? await r.json()
       : { detail: await r.text() || `서버 오류 (${r.status})` };
     updateRemainingUses(d.remaining_uses);
-    if (!r.ok) throw new Error(d.detail || "저장 실패");
+
+    const conflict = d && typeof d.detail === "object" ? d.detail : null;
+    if (
+      r.status === 409 && conflict &&
+      conflict.code === "similar_memories_found" &&
+      Array.isArray(conflict.similar_memories)
+    ) {
+      openSimilarMemoryDialog(conflict.similar_memories, { text, scope });
+      return;
+    }
+    if (!r.ok) throw new Error(responseErrorMessage(d, "저장 실패"));
+
     const sharedResult = d.proposal && typeof d.proposal === "object" ? d.proposal : d;
     const sharedStatus = String(sharedResult.status || d.status || "").toLowerCase();
     const isPending = scope === "shared" && (
@@ -830,6 +1006,7 @@ async function ingest() {
   } catch (e) {
     showSaveResult(`저장 실패: ${e.message}`, true);
   } finally {
+    ingestBusy = false;
     await refreshRemainingUses();
     btn.disabled = false;
     updateMemoryScopeGuidance();
@@ -879,7 +1056,9 @@ function proposalApprovalInfo(proposal) {
   const approvedByMe = proposal.approved_by_me === true || isAuthor ||
     approvedUserIds.includes(String(currentSession && currentSession.id || ""));
   const explicitCanApprove = typeof proposal.can_approve === "boolean" ? proposal.can_approve : null;
-  const canApprove = !approvedByMe && (explicitCanApprove === null || explicitCanApprove);
+  const canApprove = isAdmin()
+    ? explicitCanApprove !== false
+    : !approvedByMe && (explicitCanApprove === null || explicitCanApprove);
   const approvalCount = Math.max(
     1,
     Number(proposal.approval_count ?? proposal.approvals_count ?? approvals.length) || 1,
@@ -1101,6 +1280,259 @@ async function approveSharedProposal(proposal, button) {
   }
 }
 
+const SHARED_DELETION_PROPOSAL_PAGE_SIZE = 100;
+let sharedDeletionProposalItems = [];
+let sharedDeletionProposalNextOffset = 0;
+let sharedDeletionProposalHasMore = false;
+let sharedDeletionProposalLoading = false;
+let sharedDeletionProposalLoadMoreFailed = false;
+let sharedDeletionProposalRequestVersion = 0;
+
+function deletionProposalRequesterId(proposal) {
+  return String(proposal.requested_by_user_id || "");
+}
+
+function deletionProposalRequesterName(proposal) {
+  return String(proposal.requested_by_username || "사용자");
+}
+
+function deletionProposalApprovalInfo(proposal) {
+  const isRequester = deletionProposalRequesterId(proposal) &&
+    deletionProposalRequesterId(proposal) === String(currentSession && currentSession.id || "");
+  const approvedByMe = proposal.approved_by_me === true || isRequester;
+  const explicitCanApprove = typeof proposal.can_approve === "boolean" ? proposal.can_approve : null;
+  const canApprove = isAdmin()
+    ? explicitCanApprove !== false
+    : !approvedByMe && (explicitCanApprove === null || explicitCanApprove);
+  const approvalCount = Math.max(1, Number(proposal.approval_count) || 1);
+  const requiredApprovals = Math.max(2, Number(proposal.required_approvals) || 2);
+  return { isRequester, approvedByMe, canApprove, approvalCount, requiredApprovals };
+}
+
+function setSharedDeletionApprovalFeedback(message = "", isError = false) {
+  const feedback = $("sharedDeletionApprovalFeedback");
+  feedback.textContent = message;
+  feedback.classList.toggle("show", Boolean(message));
+  feedback.classList.toggle("error", Boolean(message) && isError);
+}
+
+function renderSharedDeletionProposals(proposals) {
+  const list = $("sharedDeletionApprovalList");
+  list.replaceChildren();
+  const pending = proposals.filter(proposal => {
+    const status = String(proposal && proposal.status || "pending").toLowerCase();
+    return !["deleted", "approved", "rejected", "cancelled"].includes(status);
+  });
+  $("sharedDeletionApprovalCount").textContent = pending.length
+    ? `${pending.length}건${sharedDeletionProposalHasMore ? " 이상" : ""} 대기`
+    : "대기 없음";
+
+  if (!pending.length) {
+    const empty = document.createElement("div");
+    empty.className = "approval-empty";
+    empty.textContent = "승인을 기다리는 모두의 기억 삭제 요청이 없습니다.";
+    list.appendChild(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  pending.forEach(proposal => {
+    const info = deletionProposalApprovalInfo(proposal || {});
+    const item = document.createElement("article");
+    item.className = "approval-item";
+
+    const main = document.createElement("div");
+    main.className = "approval-main";
+    const labels = document.createElement("div");
+    labels.className = "approval-labels";
+    appendProposalBadge(labels, `chip ${sourceKey(proposal.source)}`, sourceLabel(proposal.source));
+    appendProposalBadge(labels, "scope-badge shared", "모두의 기억");
+    appendProposalBadge(labels, "scope-badge deletion", "삭제 승인");
+    appendProposalBadge(
+      labels,
+      "scope-badge pending",
+      `${info.approvalCount}/${info.requiredApprovals}명 동의`,
+    );
+    main.appendChild(labels);
+
+    const content = document.createElement("div");
+    content.className = "approval-content";
+    content.textContent = String(proposal.content || "내용 없음");
+    main.appendChild(content);
+
+    const meta = document.createElement("div");
+    meta.className = "approval-meta";
+    const rawDate = proposal.created_at ? new Date(proposal.created_at) : null;
+    const createdAt = rawDate && !Number.isNaN(rawDate.getTime())
+      ? rawDate.toLocaleString("ko-KR") : "";
+    meta.textContent = `${deletionProposalRequesterName(proposal)} 삭제 요청${createdAt ? ` · ${createdAt}` : ""}`;
+    main.appendChild(meta);
+    item.appendChild(main);
+
+    const action = document.createElement("div");
+    action.className = "approval-action";
+    const button = document.createElement("button");
+    button.type = "button";
+    if (info.canApprove) {
+      button.textContent = isAdmin() ? "즉시 삭제" : "동의하기";
+      button.setAttribute(
+        "aria-label",
+        isAdmin()
+          ? `${deletionProposalRequesterName(proposal)}의 모두의 기억 삭제 요청 즉시 승인`
+          : `${deletionProposalRequesterName(proposal)}의 모두의 기억 삭제 요청에 동의`,
+      );
+      button.addEventListener("click", () => approveSharedDeletionProposal(proposal, button));
+    } else {
+      button.disabled = true;
+      button.textContent = info.isRequester
+        ? "내 동의 완료"
+        : info.approvedByMe ? "동의 완료" : "승인 불가";
+      button.setAttribute("aria-label", button.textContent);
+    }
+    action.appendChild(button);
+    item.appendChild(action);
+    fragment.appendChild(item);
+  });
+  list.appendChild(fragment);
+}
+
+function updateSharedDeletionProposalMoreButton() {
+  const wrap = $("sharedDeletionApprovalMoreWrap");
+  const button = $("sharedDeletionApprovalMoreBtn");
+  wrap.style.display = sharedDeletionProposalHasMore ? "" : "none";
+  button.disabled = sharedDeletionProposalLoading;
+  button.textContent = sharedDeletionProposalLoading
+    ? "불러오는 중…"
+    : sharedDeletionProposalLoadMoreFailed ? "다시 시도" : "더 보기";
+}
+
+async function loadSharedDeletionProposals({ append = false } = {}) {
+  if (!currentSession || sharedDeletionProposalLoading ||
+      (append && !sharedDeletionProposalHasMore)) return;
+  const list = $("sharedDeletionApprovalList");
+  const refreshButton = $("sharedDeletionApprovalRefresh");
+  const offset = append ? sharedDeletionProposalNextOffset : 0;
+  const requestUserId = String(currentSession.id || "");
+  const requestVersion = append
+    ? sharedDeletionProposalRequestVersion
+    : ++sharedDeletionProposalRequestVersion;
+  sharedDeletionProposalLoading = true;
+  if (!append) {
+    sharedDeletionProposalItems = [];
+    sharedDeletionProposalNextOffset = 0;
+    sharedDeletionProposalHasMore = false;
+    sharedDeletionProposalLoadMoreFailed = false;
+    $("sharedDeletionApprovalCount").textContent = "";
+    list.replaceChildren();
+    setSharedDeletionApprovalFeedback("");
+  } else {
+    sharedDeletionProposalLoadMoreFailed = false;
+    setSharedDeletionApprovalFeedback("");
+  }
+  refreshButton.disabled = true;
+  updateSharedDeletionProposalMoreButton();
+  list.setAttribute("aria-busy", "true");
+  if (!list.children.length) {
+    const loading = document.createElement("div");
+    loading.className = "approval-empty";
+    loading.textContent = "삭제 승인 대기 목록을 불러오는 중입니다.";
+    list.appendChild(loading);
+  }
+
+  try {
+    const params = new URLSearchParams({
+      limit: String(SHARED_DELETION_PROPOSAL_PAGE_SIZE),
+      offset: String(offset),
+    });
+    const response = await apiFetch(`/api/shared-memory-deletion-proposals?${params}`);
+    const data = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(responseErrorMessage(data, "삭제 승인 대기 목록을 불러오지 못했습니다."));
+    }
+    if (!currentSession || String(currentSession.id || "") !== requestUserId ||
+        requestVersion !== sharedDeletionProposalRequestVersion) return;
+    const incoming = proposalListFromPayload(data);
+    const seen = new Set();
+    sharedDeletionProposalItems = [
+      ...(append ? sharedDeletionProposalItems : []),
+      ...incoming,
+    ].filter(proposal => {
+      const id = String(proposal && proposal.id || "");
+      if (!id) return true;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    const providedNextOffset = Number(data && data.next_offset);
+    sharedDeletionProposalNextOffset = Number.isFinite(providedNextOffset) && providedNextOffset >= 0
+      ? Math.floor(providedNextOffset)
+      : offset + incoming.length;
+    sharedDeletionProposalHasMore = data && data.has_more === true && incoming.length > 0;
+    sharedDeletionProposalLoadMoreFailed = false;
+    renderSharedDeletionProposals(sharedDeletionProposalItems);
+  } catch (error) {
+    if (!currentSession || String(currentSession.id || "") !== requestUserId ||
+        requestVersion !== sharedDeletionProposalRequestVersion) return;
+    const messageText = error.message || "삭제 승인 대기 목록을 불러오지 못했습니다.";
+    if (append) {
+      sharedDeletionProposalLoadMoreFailed = true;
+      setSharedDeletionApprovalFeedback(`다음 삭제 승인 목록을 불러오지 못했습니다. ${messageText}`, true);
+    } else {
+      $("sharedDeletionApprovalCount").textContent = "";
+      list.replaceChildren();
+      const message = document.createElement("div");
+      message.className = "approval-empty";
+      message.textContent = messageText;
+      list.appendChild(message);
+    }
+  } finally {
+    if (requestVersion !== sharedDeletionProposalRequestVersion) return;
+    sharedDeletionProposalLoading = false;
+    list.setAttribute("aria-busy", "false");
+    refreshButton.disabled = false;
+    updateSharedDeletionProposalMoreButton();
+  }
+}
+
+async function approveSharedDeletionProposal(proposal, button) {
+  if (!currentSession || !proposal || !proposal.id) return;
+  const requestUserId = String(currentSession.id || "");
+  button.disabled = true;
+  button.textContent = isAdmin() ? "삭제 중…" : "동의 중…";
+  setSharedDeletionApprovalFeedback("");
+  try {
+    const response = await apiFetch(
+      `/api/shared-memory-deletion-proposals/${encodeURIComponent(proposal.id)}/approve`,
+      { method: "POST" },
+    );
+    const data = await responsePayload(response);
+    if (!response.ok) {
+      throw new Error(responseErrorMessage(data, "삭제 동의를 반영하지 못했습니다."));
+    }
+    if (!currentSession || String(currentSession.id || "") !== requestUserId) return;
+    const status = String(data.status || "").toLowerCase();
+    const deleted = data.deleted === true || status === "deleted";
+    if (deleted) filtersLoaded = false;
+    await Promise.all([
+      loadSharedDeletionProposals(),
+      deleted ? loadRecent() : Promise.resolve(),
+    ]);
+    if (deleted) {
+      setSharedDeletionApprovalFeedback("동의가 완료되어 모두의 기억에서 삭제됐습니다.");
+    } else {
+      const info = deletionProposalApprovalInfo(data);
+      setSharedDeletionApprovalFeedback(
+        `삭제 동의가 반영됐습니다. 현재 ${info.approvalCount}/${info.requiredApprovals}명 동의했습니다.`,
+      );
+    }
+  } catch (error) {
+    if (!currentSession || String(currentSession.id || "") !== requestUserId) return;
+    const message = error.message || "삭제 동의를 반영하지 못했습니다.";
+    await loadSharedDeletionProposals();
+    if (currentSession) setSharedDeletionApprovalFeedback(message, true);
+  }
+}
+
 let activeTag = null;
 let activeSection = "";
 let filtersLoaded = false;
@@ -1137,29 +1569,59 @@ function memoryParams() {
 }
 
 function extractField(content, names) {
-  const lines = String(content).split(/\r?\n/).map(line => line.trim());
-  for (const line of lines) {
+  const lines = String(content).split(/\r?\n/).map(line =>
+    line.trim().replace(/^[-*]\s+/, "").replace(/\*\*/g, "").trim()
+  );
+  const nextValue = index => {
+    for (let nextIndex = index + 1; nextIndex < lines.length; nextIndex += 1) {
+      const candidate = lines[nextIndex];
+      if (!candidate) continue;
+      if (/^\[[^\]]+\]\s*(?::|：)?\s*/.test(candidate)) return "";
+      return candidate;
+    }
+    return "";
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     for (const name of names) {
-      const match = line.match(new RegExp(`^${name}\\s*:\\s*(.+)$`, "i"));
-      if (match) return match[1].trim();
+      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const bracketed = line.match(new RegExp(
+        `^\\[\\s*${escapedName}\\s*\\]\\s*(?::|：)?\\s*(.*)$`, "i"
+      ));
+      const plain = line.match(new RegExp(
+        `^${escapedName}\\s*(?::|：)\\s*(.*)$`, "i"
+      ));
+      const match = bracketed || plain;
+      if (match) return match[1].trim() || nextValue(index);
     }
   }
   return "";
 }
 
+function extractHttpUrl(value) {
+  const match = String(value || "").match(/https?:\/\/[^\s<>"']+/i);
+  return match ? match[0].replace(/[.,;:!?)\]}…]+$/, "") : "";
+}
+
 function accessDetails(m, meta) {
   const service = extractField(m.content, ["서비스명", "제목"]) || meta.project || "접속 정보";
-  const url = extractField(m.content, ["URL", "호스트"]);
+  const labeledUrl = extractField(m.content, ["URL", "주소", "링크", "호스트"]);
+  const url = extractHttpUrl(meta.url) || extractHttpUrl(labeledUrl) ||
+    extractHttpUrl(m.content) || labeledUrl;
   const id = extractField(m.content, ["아이디", "ID"]);
   const password = extractField(m.content, ["비밀번호", "PW", "임시PW"]);
+  if (!url && !id && !password) return "";
   const urlValue = /^https?:\/\//i.test(url)
     ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>`
     : `<code>${escapeHtml(url || "미기재")}</code>`;
+  const credentialRows = meta.record_type === "credential" || id || password
+    ? `<div class="access-row"><b>ID</b><code>${escapeHtml(id || "미기재")}</code></div>
+       <div class="access-row"><b>비밀번호</b><code>${escapeHtml(password || "미기재")}</code></div>`
+    : "";
   return `<div class="access-details">
     <div class="access-title">${escapeHtml(service)}</div>
     <div class="access-row"><b>URL</b>${urlValue}</div>
-    <div class="access-row"><b>ID</b><code>${escapeHtml(id || "미기재")}</code></div>
-    <div class="access-row"><b>비밀번호</b><code>${escapeHtml(password || "미기재")}</code></div>
+    ${credentialRows}
   </div>`;
 }
 
@@ -1215,12 +1677,14 @@ async function loadRecentUnsafe() {
     const statusHtml = meta.status ? `<span class="status-badge">${escapeHtml(meta.status)}</span>` : "";
     const project = meta.project ? ` · ${escapeHtml(meta.project)}` : "";
     const isAccess = ["credential", "system"].includes(meta.record_type);
-    const body = isAccess ? accessDetails(m, meta) : `<div class="txt">${escapeHtml(m.content.slice(0, 90))}${m.content.length > 90 ? "…" : ""}
+    const accessBody = isAccess ? accessDetails(m, meta) : "";
+    const body = accessBody || `<div class="txt">${escapeHtml(m.content.slice(0, 90))}${m.content.length > 90 ? "…" : ""}
         <small>${escapeHtml(who)}${project}${who || project ? " · " : ""}${savedDate} 저장${statusHtml}${badge}${tagHtml}</small></div>`;
     const memoryId = escapeHtml(m.id);
     const actions = [
       m.can_edit ? `<button type="button" class="edit" title="수정" aria-label="기억 수정" data-memory-action="edit" data-memory-id="${memoryId}">✎</button>` : "",
       m.can_delete ? `<button type="button" title="삭제" aria-label="기억 삭제" data-memory-action="delete" data-memory-id="${memoryId}">×</button>` : "",
+      !m.can_delete && m.can_request_delete ? `<button type="button" class="delete-request" title="삭제 요청" aria-label="모두의 기억 삭제 요청" data-memory-action="delete-request" data-memory-id="${memoryId}">삭제 요청</button>` : "",
     ].filter(Boolean).join("");
     const source = sourceKey(m.source);
     const scope = memoryScopeInfo(m.scope);
@@ -1244,7 +1708,8 @@ $("memList").addEventListener("click", event => {
   const id = button.dataset.memoryId;
   const memory = memoryById.get(id);
   if (button.dataset.memoryAction === "edit" && memory && memory.can_edit) openEdit(id);
-  if (button.dataset.memoryAction === "delete" && memory && memory.can_delete) del(id);
+  if (button.dataset.memoryAction === "delete" && memory && memory.can_delete) del(id, button);
+  if (button.dataset.memoryAction === "delete-request" && memory && memory.can_request_delete) del(id, button);
 });
 
 async function loadRecent() {
@@ -1311,25 +1776,49 @@ async function cleanExpired() {
     const d = await r.json();
     if (!r.ok) return alert(d.detail || "만료 기억 정리에 실패했습니다.");
     alert(`${d.deleted}건 삭제했어요.`);
-    loadRecent();
+    filtersLoaded = false;
+    await Promise.all([loadRecent(), loadSharedDeletionProposals()]);
   } catch (error) {
     if (currentSession) alert(error.message || "만료 기억 정리에 실패했습니다.");
   }
 }
 
-async function del(id) {
+async function del(id, triggerButton = null) {
+  const requestUserId = String(currentSession && currentSession.id || "");
   try {
     const memory = memoryById.get(id);
-    if (!memory || !memory.can_delete) return;
-    if (!confirm("이 기억을 삭제할까요?")) return;
+    if (!memory || (!memory.can_delete && !memory.can_request_delete)) return;
+    const isShared = memory.scope === "shared";
+    const requiresApproval = isShared && !memory.can_delete && memory.can_request_delete;
+    const question = requiresApproval
+      ? "모두의 기억 삭제를 요청할까요? 요청자를 포함한 2명이 동의하면 삭제됩니다."
+      : isShared ? "이 모두의 기억을 즉시 삭제할까요?" : "이 개인기억을 삭제할까요?";
+    if (!confirm(question)) return;
+    if (triggerButton) triggerButton.disabled = true;
     const response = await apiFetch(`/api/memories/${id}`, { method: "DELETE" });
+    const data = await responsePayload(response);
+    if (!currentSession || String(currentSession.id || "") !== requestUserId) return;
     if (!response.ok) {
-      const data = await response.json();
       return alert(data.detail || "기억 삭제에 실패했습니다.");
     }
-    loadRecent();
+    const status = String(data.status || "").toLowerCase();
+    const pending = data.pending_approval === true || status === "pending";
+    const deleted = data.deleted === true || status === "deleted";
+    filtersLoaded = false;
+    await Promise.all([loadRecent(), loadSharedDeletionProposals()]);
+    if (pending) {
+      const approvalCount = Math.max(1, Number(data.approval_count) || 1);
+      const requiredApprovals = Math.max(2, Number(data.required_approvals) || 2);
+      alert(`모두의 기억 삭제 요청이 등록됐습니다. 현재 ${approvalCount}/${requiredApprovals}명 동의했습니다.`);
+    } else if (deleted) {
+      alert(isShared ? "모두의 기억을 삭제했습니다." : "개인기억을 삭제했습니다.");
+    }
   } catch (error) {
-    if (currentSession) alert(error.message || "기억 삭제에 실패했습니다.");
+    if (currentSession && String(currentSession.id || "") === requestUserId) {
+      alert(error.message || "기억 삭제에 실패했습니다.");
+    }
+  } finally {
+    if (triggerButton && triggerButton.isConnected) triggerButton.disabled = false;
   }
 }
 
@@ -1568,6 +2057,7 @@ function closeAccountManagement() {
 }
 
 document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && $("similarMemoryOverlay").classList.contains("show")) closeSimilarMemoryDialog();
   if (event.key === "Escape" && $("editOverlay").classList.contains("show")) closeEdit();
   if (event.key === "Escape" && $("auditOverlay").classList.contains("show")) closeAuditLog();
   if (event.key === "Escape" && $("accountOverlay").classList.contains("show")) closeAccountManagement();
@@ -1829,8 +2319,10 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+let signupEnabled = false;
+
 function setAuthMode(mode, focus = true) {
-  const signupMode = mode === "signup";
+  const signupMode = signupEnabled && mode === "signup";
   $("loginForm").hidden = signupMode;
   $("signupForm").hidden = !signupMode;
   $("loginTab").setAttribute("aria-selected", String(!signupMode));
@@ -1842,6 +2334,23 @@ function setAuthMode(mode, focus = true) {
   $("signupStatus").classList.remove("signup-ok");
   if (focus) {
     requestAnimationFrame(() => $(signupMode ? "signupUsernameBox" : "usernameBox").focus());
+  }
+}
+
+function applyPublicConfig(config) {
+  signupEnabled = Boolean(config && config.signup_enabled);
+  $("signupTab").hidden = !signupEnabled;
+  $("signupClosedNote").hidden = signupEnabled;
+  if (!signupEnabled) setAuthMode("login", false);
+}
+
+async function loadPublicConfig() {
+  try {
+    const response = await fetch("/api/config");
+    if (!response.ok) throw new Error("설정을 불러오지 못했습니다.");
+    applyPublicConfig(await response.json());
+  } catch (_) {
+    applyPublicConfig({ signup_enabled: false });
   }
 }
 
@@ -1882,7 +2391,7 @@ async function doLogin() {
     if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
     $("loginOverlay").classList.remove("show");
     $("pwBox").value = "";
-    await Promise.all([loadRecent(), loadSharedProposals()]);
+    await Promise.all([loadRecent(), loadSharedProposals(), loadSharedDeletionProposals()]);
     renderChatHistory();
   } catch (error) {
     $("loginErr").textContent = error.message;
@@ -1895,6 +2404,11 @@ async function doLogin() {
 }
 
 async function doSignup() {
+  if (!signupEnabled) {
+    setAuthMode("login");
+    return;
+  }
+
   const username = $("signupUsernameBox").value.trim();
   const email = $("signupEmailBox").value.trim();
   const password = $("signupPwBox").value;
@@ -1932,7 +2446,7 @@ async function doSignup() {
     $("signupPwBox").value = "";
     $("signupPwConfirmBox").value = "";
     if (!data.requires_email_confirmation && await loadSession()) {
-      await Promise.all([loadRecent(), loadSharedProposals()]);
+      await Promise.all([loadRecent(), loadSharedProposals(), loadSharedDeletionProposals()]);
       renderChatHistory();
       return;
     }
@@ -1976,6 +2490,10 @@ function applySession(data) {
   $("sharedApprovalRule").textContent = isAdmin()
     ? "관리자는 승인 대기 요청을 즉시 모두의 기억으로 공개할 수 있습니다."
     : "작성자를 포함한 2명이 동의하면 모두에게 공개됩니다.";
+  $("sharedDeletionApprovalPanel").classList.remove("role-hidden");
+  $("sharedDeletionApprovalRule").textContent = isAdmin()
+    ? "관리자는 승인 대기 중인 모두의 기억 삭제 요청을 즉시 처리할 수 있습니다."
+    : "요청자를 포함한 2명이 동의하면 모두의 기억에서 삭제됩니다.";
   updateMemoryScopeGuidance();
   $("editSaveBtn").classList.toggle("role-hidden", !canWrite());
   $("architectureBtn").classList.toggle("role-hidden", !isAdmin());
@@ -2006,6 +2524,7 @@ function showLogin() {
   $('pasteBox').value = '';
   $('askBox').value = '';
   showSaveResult('');
+  closeSimilarMemoryDialog(false);
   closeEdit();
   closeAuditLog();
   closeAccountManagement();
@@ -2026,6 +2545,17 @@ function showLogin() {
   sharedProposalRequestVersion += 1;
   updateSharedProposalMoreButton();
   setSharedApprovalFeedback("");
+  $("sharedDeletionApprovalPanel").classList.add("role-hidden");
+  $("sharedDeletionApprovalList").replaceChildren();
+  $("sharedDeletionApprovalCount").textContent = "";
+  sharedDeletionProposalItems = [];
+  sharedDeletionProposalNextOffset = 0;
+  sharedDeletionProposalHasMore = false;
+  sharedDeletionProposalLoading = false;
+  sharedDeletionProposalLoadMoreFailed = false;
+  sharedDeletionProposalRequestVersion += 1;
+  updateSharedDeletionProposalMoreButton();
+  setSharedDeletionApprovalFeedback("");
   $("cleanBtn").style.display = "none";
   setAppInert(true);
   $("loginOverlay").classList.add("show");
@@ -2084,7 +2614,7 @@ window.addEventListener("storage", event => {
 $("loginTab").addEventListener("click", () => setAuthMode("login"));
 $("signupTab").addEventListener("click", () => setAuthMode("signup"));
 document.querySelector(".auth-tabs").addEventListener("keydown", event => {
-  if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  if (!signupEnabled || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
   event.preventDefault();
   const nextMode = $("loginForm").hidden ? "login" : "signup";
   setAuthMode(nextMode, false);
@@ -2116,13 +2646,21 @@ $("sharedApprovalRefresh").addEventListener("click", () => {
 $("sharedApprovalMoreBtn").addEventListener("click", () => {
   loadSharedProposals({ append: true });
 });
+$("sharedDeletionApprovalRefresh").addEventListener("click", () => {
+  setSharedDeletionApprovalFeedback("");
+  loadSharedDeletionProposals();
+});
+$("sharedDeletionApprovalMoreBtn").addEventListener("click", () => {
+  loadSharedDeletionProposals({ append: true });
+});
 
 async function init() {
+  await loadPublicConfig();
   if (!await loadSession()) {
     showLogin();
     return;
   }
-  await Promise.all([loadRecent(), loadSharedProposals()]);
+  await Promise.all([loadRecent(), loadSharedProposals(), loadSharedDeletionProposals()]);
   renderChatHistory();
 }
 

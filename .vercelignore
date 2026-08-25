@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.private/
+.venv/
+.vscode/
+__pycache__/
+.pytest_cache/
+tests/
+scripts/
+*.sql
+requirements-dev.txt
+Dockerfile
+.dockerignore

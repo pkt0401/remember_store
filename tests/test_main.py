@@ -963,6 +963,64 @@ def test_auth_middleware_blocks_viewer_write(monkeypatch):
     _assert_security_headers(response)
 
 
+def test_public_config_is_open_and_reports_signup_availability(monkeypatch):
+    assert "/api/config" in main.OPEN_PATHS
+    monkeypatch.setattr(main, "SIGNUP_ENABLED", False)
+
+    assert main.public_config() == {"signup_enabled": False}
+
+
+def test_vercel_environment_enables_production_cookie_policy(monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+
+    assert main.is_production_environment("development") is True
+
+    monkeypatch.setattr(main, "COOKIE_SECURE", True)
+    response = Response()
+    main.set_auth_cookies(response, "access-token", "refresh-token")
+    assert all("Secure" in value for value in response.headers.getlist("set-cookie"))
+
+
+def test_index_path_is_independent_of_current_working_directory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    response = main.index()
+
+    assert Path(response.path) == main.BASE_DIR / "static" / "index.html"
+
+
+def test_signup_ui_stays_hidden_until_public_config_enables_it():
+    html = (main.BASE_DIR / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert re.search(r'id="signupTab"[^>]*\shidden(?:\s|>)', html)
+    assert '$("signupTab").hidden = !signupEnabled;' in html
+    assert '$("signupClosedNote").hidden = signupEnabled;' in html
+    assert "await loadPublicConfig();" in html
+
+
+def test_signup_is_rejected_before_database_access_when_disabled(monkeypatch):
+    monkeypatch.setattr(main, "SIGNUP_ENABLED", False)
+    monkeypatch.setattr(
+        main,
+        "account_profile_by_username",
+        lambda *_args: pytest.fail("disabled signup must not access the database"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.signup(
+            main.SignupRequest(
+                username="new-user",
+                email="new-user@example.com",
+                password="password123",
+            ),
+            _request("POST", "/api/signup"),
+            Response(),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "관리자에게 발급받은 계정" in exc_info.value.detail
+
+
 @pytest.mark.parametrize("role", ["viewer", "editor"])
 def test_auth_architecture_page_rejects_non_admin_roles(monkeypatch, role):
     monkeypatch.setattr(
@@ -1107,6 +1165,200 @@ def test_auth_middleware_preserves_no_transform_on_streaming_api_response(monkey
 )
 def test_normalize_source_uses_allowlist(raw, expected):
     assert main.normalize_source(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "[주소] http://10.250.182.156:8848/",
+            "http://10.250.182.156:8848/",
+        ),
+        (
+            "[URL]\nhttps://hub.noah-ai.dev/vibe-studio/",
+            "https://hub.noah-ai.dev/vibe-studio/",
+        ),
+        (
+            "주소: https://example.com/path?tab=course",
+            "https://example.com/path?tab=course",
+        ),
+        (
+            "참고 링크: https://example.com/docs).",
+            "https://example.com/docs",
+        ),
+    ],
+)
+def test_normalize_metadata_extracts_http_url(content, expected):
+    metadata = main.normalize_metadata({"content": content, "metadata": {}})
+
+    assert metadata["url"] == expected
+
+
+def test_effective_metadata_backfills_url_for_existing_memory():
+    metadata = main.effective_metadata({
+        "content": "[주소] https://hub.noah-ai.dev/vibe-studio/",
+        "metadata": {"record_type": "system"},
+        "created_at": "2026-08-14T00:00:00+00:00",
+    })
+
+    assert metadata["url"] == "https://hub.noah-ai.dev/vibe-studio/"
+
+
+def test_infer_record_type_recognizes_labeled_business_system():
+    assert main.infer_record_type(
+        "[유형] 업무 시스템\n[제목] ATL\n[주소] http://10.0.0.1:8848/"
+    ) == "system"
+
+
+def test_find_similar_memories_returns_allowlisted_preview(monkeypatch):
+    class SimilarityClient:
+        def __init__(self):
+            self.calls = []
+
+        def rpc(self, name, params):
+            self.calls.append((name, params))
+            return SimpleNamespace(execute=lambda: _result([
+                {
+                    "id": "similar-1",
+                    "source": "note",
+                    "content": "<script>alert('x')</script> ATL AI 도구 비용 처리",
+                    "metadata": {
+                        "project": "ATL",
+                        "person": "권민정",
+                        "work_date": "2026-08-25",
+                        "tags": ["ATL", "비용", 123],
+                        "credentials": "must-not-leak",
+                    },
+                    "created_at": "2026-08-25T01:00:00+00:00",
+                    "similarity": 0.91,
+                    "scope": "personal",
+                    "owner_user_id": ALICE_ID,
+                },
+                {
+                    "id": "below-threshold",
+                    "source": "note",
+                    "content": "weak match",
+                    "metadata": {},
+                    "created_at": "2026-08-25T01:00:00+00:00",
+                    "similarity": main.SIMILAR_MEMORY_THRESHOLD - 0.01,
+                    "scope": "shared",
+                    "owner_user_id": None,
+                },
+            ]))
+
+    db = SimilarityClient()
+    monkeypatch.setattr(main, "embed", lambda texts: [[0.1, 0.2]])
+
+    matches = main.find_similar_memories(
+        "ATL AI 도구 비용 처리",
+        "personal",
+        db,
+        _user(),
+    )
+
+    assert db.calls == [("match_memories", {
+        "query_embedding": [0.1, 0.2],
+        "match_count": 10,
+        "filter_source": None,
+        "query_scope": "personal",
+        "requesting_user_id": ALICE_ID,
+    })]
+    assert matches == [{
+        "id": "similar-1",
+        "scope": "personal",
+        "source": "note",
+        "snippet": "<script>alert('x')</script> ATL AI 도구 비용 처리",
+        "similarity": 0.91,
+        "created_at": "2026-08-25T01:00:00+00:00",
+        "metadata": {
+            "person": "권민정",
+            "project": "ATL",
+            "work_date": "2026-08-25",
+            "tags": ["ATL", "비용"],
+        },
+    }]
+
+
+def test_ingest_warns_before_quota_or_database_write(monkeypatch):
+    candidate = {
+        "id": "similar-1",
+        "scope": "shared",
+        "source": "note",
+        "snippet": "기존 ATL 비용 처리 안내",
+        "similarity": 0.9,
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "metadata": {},
+    }
+    monkeypatch.setattr(
+        main,
+        "find_similar_memories",
+        lambda text, scope, db, user: [candidate],
+    )
+    monkeypatch.setattr(
+        main,
+        "consume_ai_use",
+        lambda _user_id: pytest.fail("similarity warning must not consume quota"),
+    )
+    monkeypatch.setattr(
+        main,
+        "ingest_with_consumed_use",
+        lambda *_args: pytest.fail("similarity warning must not write"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.ingest(
+            main.IngestRequest(
+                text="이번 달 ATL AI 도구 사용료",
+                scope="personal",
+                allow_similar=False,
+            ),
+            _request("POST", "/api/ingest", user=_user(), db=object()),
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == {
+        "code": "similar_memories_found",
+        "message": "유사한 기억이 있습니다. 그래도 저장하시겠습니까?",
+        "similar_memories": [candidate],
+    }
+
+
+def test_confirmed_similar_ingest_skips_preflight(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "find_similar_memories",
+        lambda *_args: pytest.fail("confirmed save must skip similarity preflight"),
+    )
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(
+        main,
+        "ingest_with_consumed_use",
+        lambda req, user, db: {"saved": 1, "scope": req.scope},
+    )
+
+    result = main.ingest(
+        main.IngestRequest(
+            text="이번 달 ATL AI 도구 사용료",
+            scope="personal",
+            allow_similar=True,
+        ),
+        _request("POST", "/api/ingest", user=_user(), db=object()),
+    )
+
+    assert result == {"saved": 1, "scope": "personal", "remaining_uses": 9}
+
+
+@pytest.mark.parametrize("question", ["ATL 주소 알려줘", "ATL URL 알려줘", "ATL 링크 알려줘"])
+def test_lexical_link_question_synonyms_find_same_memory(question):
+    rows = [{
+        "id": "atl-link",
+        "content": "ATL 지식 문의 http://10.250.182.156:8848/",
+        "metadata": {"project": "ATL", "tags": ["지식 문의"]},
+    }]
+
+    assert [row["id"] for row in main.lexical_memory_hits(question, rows)] == [
+        "atl-link"
+    ]
 
 
 def test_normalize_parsed_payload_sanitizes_untrusted_fields():
@@ -1936,8 +2188,12 @@ def test_list_memories_includes_shared_and_own_but_hides_other_personal():
     by_id = {item["id"]: item for item in items}
     assert by_id["shared"]["scope"] == "shared"
     assert by_id["shared"]["can_edit"] is False
+    assert by_id["shared"]["can_delete"] is False
+    assert by_id["shared"]["can_request_delete"] is True
     assert by_id["alice-private"]["scope"] == "personal"
     assert by_id["alice-private"]["can_edit"] is True
+    assert by_id["alice-private"]["can_delete"] is True
+    assert by_id["alice-private"]["can_request_delete"] is False
     assert db.visibility_expressions == [
         "and(scope.eq.shared,publication_status.eq.published),"
         "and(scope.eq.personal,publication_status.eq.published,"
@@ -1993,10 +2249,11 @@ def test_published_shared_is_visible_to_every_user_but_pending_is_hidden(monkeyp
     )
 
 
-def test_shared_author_cannot_patch_or_delete_published_memory(monkeypatch):
+def test_shared_author_cannot_patch_published_memory(monkeypatch):
+    memory_id = "77777777-7777-4777-8777-777777777777"
     db = _MemoryClient([
         _memory(
-            "published-shared",
+            memory_id,
             scope="shared",
             creator=ALICE_ID,
             content="공개 후에는 관리자만 변경",
@@ -2016,30 +2273,522 @@ def test_shared_author_cannot_patch_or_delete_published_memory(monkeypatch):
 
     with pytest.raises(HTTPException) as patch_error:
         main.update_memory(
-            "published-shared",
+            memory_id,
             main.UpdateMemoryRequest(content="작성자가 바꾸려는 내용"),
             _request(
                 "PATCH",
-                "/api/memories/published-shared",
-                user=_user(),
-                db=db,
-            ),
-        )
-
-    with pytest.raises(HTTPException) as delete_error:
-        main.delete_memory(
-            "published-shared",
-            _request(
-                "DELETE",
-                "/api/memories/published-shared",
+                f"/api/memories/{memory_id}",
                 user=_user(),
                 db=db,
             ),
         )
 
     assert patch_error.value.status_code == 404
-    assert delete_error.value.status_code == 404
     assert db.rows[0]["content"] == "공개 후에는 관리자만 변경"
+
+
+def test_admin_can_still_patch_published_shared_memory(monkeypatch):
+    memory_id = "77777777-7777-4777-8777-777777777777"
+    db = _MemoryClient([
+        _memory(
+            memory_id,
+            scope="shared",
+            creator=ALICE_ID,
+            content="관리자 수정 전",
+        ),
+    ])
+    monkeypatch.setattr(main, "admin_sb", db)
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "embed", lambda _texts: [[0.4]])
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    result = main.update_memory(
+        memory_id,
+        main.UpdateMemoryRequest(content="관리자 수정 후"),
+        _request(
+            "PATCH",
+            f"/api/memories/{memory_id}",
+            user=_user(BOB_ID, role="admin"),
+            db=db,
+        ),
+    )
+
+    assert result["content"] == "관리자 수정 후"
+    assert db.rows[0]["content"] == "관리자 수정 후"
+
+
+def test_personal_memory_owner_deletes_immediately_and_other_users_stay_isolated(
+    monkeypatch,
+):
+    memory_id = "88888888-8888-4888-8888-888888888888"
+    db = _MemoryClient([
+        _memory(
+            memory_id,
+            scope="personal",
+            owner=ALICE_ID,
+            creator=ALICE_ID,
+            content="앨리스 개인 메모",
+        ),
+    ])
+    audits = []
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *args, **kwargs: audits.append((args, kwargs)),
+    )
+
+    result = main.delete_memory(
+        memory_id,
+        _request(
+            "DELETE",
+            f"/api/memories/{memory_id}",
+            user=_user(),
+            db=db,
+        ),
+    )
+
+    assert result == {
+        "status": "deleted",
+        "deleted": True,
+        "pending_approval": False,
+        "proposal_id": None,
+        "approval_count": 0,
+        "required_approvals": 0,
+    }
+    assert db.rows == []
+    assert db.executed_operations == ["select", "delete"]
+    assert audits[0][0][2] == "memory_delete"
+
+
+def test_shared_editor_delete_is_pending_and_same_user_retry_does_not_add_vote(
+    monkeypatch,
+):
+    memory_id = "77777777-7777-4777-8777-777777777777"
+    proposal_id = "99999999-9999-4999-8999-999999999999"
+
+    def handler(name, params, _client):
+        assert name == "request_shared_memory_deletion"
+        assert params == {"target_memory_id": memory_id}
+        return [{
+            "proposal_id": proposal_id,
+            "proposal_status": "pending",
+            "deleted": False,
+            "approval_count": 1,
+            "required_approvals": 2,
+        }]
+
+    db = _MemoryRpcClient([
+        _memory(memory_id, scope="shared", creator=ALICE_ID),
+    ], handler)
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *_args, **_kwargs: pytest.fail(
+            "shared deletion audit must be atomic inside the SQL RPC"
+        ),
+    )
+
+    first = main.delete_memory(
+        memory_id,
+        _request(
+            "DELETE",
+            f"/api/memories/{memory_id}",
+            user=_user(),
+            db=db,
+        ),
+    )
+    repeated = main.delete_memory(
+        memory_id,
+        _request(
+            "DELETE",
+            f"/api/memories/{memory_id}",
+            user=_user(),
+            db=db,
+        ),
+    )
+
+    expected = {
+        "status": "pending",
+        "deleted": False,
+        "pending_approval": True,
+        "proposal_id": proposal_id,
+        "approval_count": 1,
+        "required_approvals": 2,
+    }
+    assert first == expected
+    assert repeated == expected
+    assert len(db.rpc_calls) == 2
+    assert len(db.rows) == 1
+
+
+def test_different_editor_delete_removes_shared_memory_after_second_vote(monkeypatch):
+    memory_id = "77777777-7777-4777-8777-777777777777"
+    proposal_id = "99999999-9999-4999-8999-999999999999"
+    rpc_count = 0
+
+    def handler(_name, _params, client):
+        nonlocal rpc_count
+        rpc_count += 1
+        if rpc_count == 1:
+            return [{
+                "proposal_id": proposal_id,
+                "proposal_status": "pending",
+                "deleted": False,
+                "approval_count": 1,
+                "required_approvals": 2,
+            }]
+        client.rows = []
+        return [{
+            "proposal_id": proposal_id,
+            "proposal_status": "deleted",
+            "deleted": True,
+            "approval_count": 2,
+            "required_approvals": 2,
+        }]
+
+    db = _MemoryRpcClient([
+        _memory(
+            memory_id,
+            scope="shared",
+            creator=ALICE_ID,
+            content="삭제 승인 전에도 검색 가능한 공유 기억",
+        ),
+    ], handler)
+    monkeypatch.setattr(main, "_catalog_cache", {})
+    monkeypatch.setattr(main, "_management_catalog_cache", {})
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+
+    first = main.delete_memory(
+        memory_id,
+        _request(
+            "DELETE",
+            f"/api/memories/{memory_id}",
+            user=_user(),
+            db=db,
+        ),
+    )
+    visible_after_first_vote = main.memory_catalog(db, BOB_ID)
+    listed_after_first_vote = main.list_memories(
+        request=_request("GET", "/api/memories", user=_user(BOB_ID), db=db),
+        response=Response(),
+    )
+    searchable_after_first_vote = main.lexical_memory_hits(
+        "삭제 승인 전에도 검색 가능한 공유 기억",
+        visible_after_first_vote,
+    )
+
+    second = main.delete_memory(
+        memory_id,
+        _request(
+            "DELETE",
+            f"/api/memories/{memory_id}",
+            user=_user(BOB_ID),
+            db=db,
+        ),
+    )
+    visible_after_second_vote = main.memory_catalog(db, ALICE_ID)
+
+    assert first["status"] == "pending"
+    assert first["approval_count"] == 1
+    assert {row["id"] for row in visible_after_first_vote} == {memory_id}
+    assert {row["id"] for row in listed_after_first_vote} == {memory_id}
+    assert {row["id"] for row in searchable_after_first_vote} == {memory_id}
+    assert second == {
+        "status": "deleted",
+        "deleted": True,
+        "pending_approval": False,
+        "proposal_id": proposal_id,
+        "approval_count": 2,
+        "required_approvals": 2,
+    }
+    assert visible_after_second_vote == []
+    assert db.rows == []
+
+
+def test_viewer_cannot_request_shared_delete_but_can_cast_second_approval(monkeypatch):
+    memory_id = "77777777-7777-4777-8777-777777777777"
+    proposal_id = "99999999-9999-4999-8999-999999999999"
+
+    def unexpected_request(*_args):
+        raise AssertionError("viewer delete request must not reach the RPC")
+
+    request_db = _MemoryRpcClient([
+        _memory(memory_id, scope="shared", creator=ALICE_ID),
+    ], unexpected_request)
+    with pytest.raises(HTTPException) as denied:
+        main.delete_memory(
+            memory_id,
+            _request(
+                "DELETE",
+                f"/api/memories/{memory_id}",
+                user=_user(BOB_ID, role="viewer"),
+                db=request_db,
+            ),
+        )
+
+    approval_db = _MemoryRpcClient([
+        _memory(memory_id, scope="shared", creator=ALICE_ID),
+    ], lambda name, params, client: (
+        client.rows.clear()
+        or [{
+            "proposal_id": proposal_id,
+            "proposal_status": "deleted",
+            "deleted": True,
+            "approval_count": 2,
+            "required_approvals": 2,
+        }]
+    ))
+    approved = main.approve_shared_memory_deletion_proposal(
+        proposal_id,
+        _request(
+            "POST",
+            f"/api/shared-memory-deletion-proposals/{proposal_id}/approve",
+            user=_user(BOB_ID, role="viewer"),
+            db=approval_db,
+        ),
+    )
+
+    assert denied.value.status_code == 403
+    assert request_db.rpc_calls == []
+    assert approval_db.rpc_calls == [(
+        "approve_shared_memory_deletion_proposal",
+        {"target_proposal_id": proposal_id},
+    )]
+    assert approved["status"] == "deleted"
+    assert approved["approval_count"] == 2
+    assert approval_db.rows == []
+
+
+def test_admin_deletes_shared_memory_immediately_with_one_vote(monkeypatch):
+    memory_id = "77777777-7777-4777-8777-777777777777"
+    proposal_id = "99999999-9999-4999-8999-999999999999"
+
+    def handler(_name, _params, client):
+        client.rows = []
+        return [{
+            "proposal_id": proposal_id,
+            "proposal_status": "deleted",
+            "deleted": True,
+            "approval_count": 1,
+            "required_approvals": 2,
+        }]
+
+    db = _MemoryRpcClient([
+        _memory(memory_id, scope="shared", creator=ALICE_ID),
+    ], handler)
+
+    result = main.delete_memory(
+        memory_id,
+        _request(
+            "DELETE",
+            f"/api/memories/{memory_id}",
+            user=_user(BOB_ID, role="admin"),
+            db=db,
+        ),
+    )
+
+    assert result["status"] == "deleted"
+    assert result["deleted"] is True
+    assert result["approval_count"] == 1
+    assert db.rows == []
+    assert db.rpc_calls == [(
+        "request_shared_memory_deletion",
+        {"target_memory_id": memory_id},
+    )]
+
+
+def test_shared_deletion_rpc_missing_migration_returns_guidance(monkeypatch):
+    db = _RpcClient({
+        "request_shared_memory_deletion": RuntimeError(
+            "Could not find the function public.request_shared_memory_deletion"
+        ),
+    })
+
+    with pytest.raises(HTTPException) as raised:
+        main.run_shared_memory_deletion_rpc(
+            db,
+            "request_shared_memory_deletion",
+            "target_memory_id",
+            "77777777-7777-4777-8777-777777777777",
+        )
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == main.SHARED_DELETION_APPROVAL_MIGRATION_MESSAGE
+
+
+def test_shared_deletion_rpc_ambiguous_legacy_function_returns_guidance(monkeypatch):
+    db = _RpcClient({
+        "approve_shared_memory_deletion_proposal": RuntimeError(
+            '42702 column reference "proposal_id" is ambiguous'
+        ),
+    })
+
+    with pytest.raises(HTTPException) as raised:
+        main.run_shared_memory_deletion_rpc(
+            db,
+            "approve_shared_memory_deletion_proposal",
+            "target_proposal_id",
+            "99999999-9999-4999-8999-999999999999",
+        )
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == main.SHARED_DELETION_APPROVAL_MIGRATION_MESSAGE
+
+
+def test_shared_deletion_proposal_list_exposes_snapshot_and_vote_eligibility(
+    monkeypatch,
+):
+    proposal_id = "99999999-9999-4999-8999-999999999999"
+    memory_id = "77777777-7777-4777-8777-777777777777"
+    tables = {
+        "shared_memory_deletion_proposals": [{
+            "id": proposal_id,
+            "memory_id": memory_id,
+            "source_snapshot": "note",
+            "content_snapshot": "삭제 승인 대상 원문 snapshot",
+            "requested_by_user_id": ALICE_ID,
+            "status": "pending",
+            "required_approvals": 2,
+            "created_at": "2026-08-11T01:00:00+00:00",
+            "deleted_at": None,
+        }],
+        "shared_memory_deletion_proposal_approvals": [{
+            "proposal_id": proposal_id,
+            "approver_user_id": ALICE_ID,
+        }],
+        "account_profiles": [{"id": ALICE_ID, "username": "alice"}],
+    }
+
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+            self.equal_filters = []
+            self.in_filters = []
+            self.bounds = None
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, column, value):
+            self.equal_filters.append((column, value))
+            return self
+
+        def in_(self, column, values):
+            self.in_filters.append((column, set(values)))
+            return self
+
+        def limit(self, _count):
+            return self
+
+        def range(self, start, end):
+            self.bounds = (start, end)
+            return self
+
+        def execute(self):
+            rows = [
+                row for row in self.rows
+                if all(row.get(column) == value for column, value in self.equal_filters)
+                and all(row.get(column) in values for column, values in self.in_filters)
+            ]
+            if self.bounds:
+                start, end = self.bounds
+                rows = rows[start:end + 1]
+            return _result([dict(row) for row in rows])
+
+    class ProposalClient:
+        def table(self, name):
+            return Query(tables[name])
+
+    monkeypatch.setattr(main, "admin_sb", ProposalClient())
+
+    requester = main.load_shared_memory_deletion_proposals(_user())[0]
+    viewer = main.load_shared_memory_deletion_proposals(
+        _user(BOB_ID, role="viewer")
+    )[0]
+
+    assert requester["memory_id"] == memory_id
+    assert requester["source"] == "note"
+    assert requester["content"] == "삭제 승인 대상 원문 snapshot"
+    assert requester["requested_by_username"] == "alice"
+    assert requester["approval_count"] == 1
+    assert requester["required_approvals"] == 2
+    assert requester["approved_by_me"] is True
+    assert requester["can_approve"] is False
+    assert viewer["approved_by_me"] is False
+    assert viewer["can_approve"] is True
+
+
+@pytest.mark.parametrize(
+    ("loaded_count", "expected_count", "has_more", "next_offset"),
+    [
+        (3, 2, True, 6),
+        (2, 2, False, None),
+        (1, 1, False, None),
+    ],
+)
+def test_shared_deletion_proposal_pagination_contract(
+    monkeypatch,
+    loaded_count,
+    expected_count,
+    has_more,
+    next_offset,
+):
+    rows = [{"id": f"deletion-{index}"} for index in range(loaded_count)]
+    calls = []
+
+    def fake_load(user, proposal_id=None, *, page_size=100, offset=0):
+        calls.append((user["id"], proposal_id, page_size, offset))
+        return rows
+
+    monkeypatch.setattr(main, "load_shared_memory_deletion_proposals", fake_load)
+
+    result = main.list_shared_memory_deletion_proposals(
+        _request(
+            "GET",
+            "/api/shared-memory-deletion-proposals",
+            user=_user(),
+        ),
+        limit=2,
+        offset=4,
+    )
+
+    assert calls == [(ALICE_ID, None, 3, 4)]
+    assert result == {
+        "proposals": rows[:expected_count],
+        "has_more": has_more,
+        "next_offset": next_offset,
+    }
+
+
+@pytest.mark.parametrize(("limit", "offset"), [(0, 0), (101, 0), (10, -1)])
+def test_shared_deletion_proposal_rejects_invalid_pagination(
+    monkeypatch,
+    limit,
+    offset,
+):
+    monkeypatch.setattr(
+        main,
+        "load_shared_memory_deletion_proposals",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid pagination must be rejected before database access"
+        ),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        main.list_shared_memory_deletion_proposals(
+            _request(
+                "GET",
+                "/api/shared-memory-deletion-proposals",
+                user=_user(),
+            ),
+            limit=limit,
+            offset=offset,
+        )
+
+    assert raised.value.status_code == 422
 
 
 def test_filtered_list_supports_legacy_sender_tags_pagination_and_count(monkeypatch):
@@ -2087,12 +2836,13 @@ def test_filtered_list_supports_legacy_sender_tags_pagination_and_count(monkeypa
 
 @pytest.mark.parametrize("operation", ["update", "delete"])
 def test_other_users_personal_memory_cannot_be_updated_or_deleted(monkeypatch, operation):
+    memory_id = "88888888-8888-4888-8888-888888888888"
     db = _MemoryClient([
-        _memory("bob-private", scope="personal", owner=BOB_ID, creator=BOB_ID),
+        _memory(memory_id, scope="personal", owner=BOB_ID, creator=BOB_ID),
     ])
     request = _request(
         "PATCH" if operation == "update" else "DELETE",
-        "/api/memories/bob-private",
+        f"/api/memories/{memory_id}",
         user=_user(),
         db=db,
     )
@@ -2104,16 +2854,16 @@ def test_other_users_personal_memory_cannot_be_updated_or_deleted(monkeypatch, o
     with pytest.raises(HTTPException) as exc_info:
         if operation == "update":
             main.update_memory(
-                "bob-private",
+                memory_id,
                 main.UpdateMemoryRequest(content="attempted overwrite"),
                 request,
             )
         else:
-            main.delete_memory("bob-private", request)
+            main.delete_memory(memory_id, request)
 
     assert exc_info.value.status_code == 404
     assert db.executed_operations == ["select"]
-    assert db.rows[0]["content"] == "bob-private content"
+    assert db.rows[0]["content"] == f"{memory_id} content"
     assert ALICE_ID in db.visibility_expressions[0]
 
 
@@ -2326,6 +3076,17 @@ class _RpcClient:
     def rpc(self, name, params):
         self.calls.append((name, params))
         return _RpcResult(self.responses[name])
+
+
+class _MemoryRpcClient(_MemoryClient):
+    def __init__(self, rows, handler):
+        super().__init__(rows)
+        self.handler = handler
+        self.rpc_calls = []
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        return _RpcResult(self.handler(name, params, self))
 
 
 def test_consume_ai_use_returns_atomic_balance_and_maps_exhaustion(monkeypatch):
@@ -2789,7 +3550,10 @@ def test_shared_memory_approval_migration_enforces_distinct_two_user_consent():
     )[1].split("-- replace all memory policies", 1)[0]
     assert "approver_id uuid := auth.uid()" in approve_rpc
     assert "for update" in approve_rpc
-    assert "on conflict (proposal_id, approver_user_id) do nothing" in approve_rpc
+    assert (
+        "on conflict on constraint shared_memory_proposal_approvals_pkey"
+        in approve_rpc
+    )
     assert "counted_approvals >= proposal_record.required_approvals" in approve_rpc
     assert "or approver_role = 'admin'" in approve_rpc
     assert "set publication_status = 'published'" in approve_rpc
@@ -2878,7 +3642,10 @@ def test_admin_duplicate_approval_still_audits_actual_publish_transition():
         # An admin may already own the author's vote, so ON CONFLICT inserts no
         # new approval. Publishing is still a state transition that must be
         # audited independently of approval_inserted.
-        assert "on conflict (proposal_id, approver_user_id) do nothing" in approve_rpc
+        assert (
+            "on conflict on constraint shared_memory_proposal_approvals_pkey"
+            in approve_rpc
+        )
         assert "or approver_role = 'admin'" in approve_rpc
         assert "published_now boolean := false" in approve_rpc
         assert "published_now := true" in approve_rpc
@@ -2890,6 +3657,135 @@ def test_admin_duplicate_approval_still_audits_actual_publish_transition():
             < approve_rpc.index("if approval_inserted > 0 or published_now then")
             < approve_rpc.index("'shared_memory_proposal_approve'")
         )
+
+
+def test_shared_memory_deletion_migration_enforces_two_distinct_voters_and_history():
+    root = Path(__file__).resolve().parents[1]
+    migration = (
+        root / "migration_shared_memory_deletion_approvals.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    proposal_table = migration.split(
+        "create table if not exists public.shared_memory_deletion_proposals", 1
+    )[1].split(
+        "create table if not exists public.shared_memory_deletion_proposal_approvals",
+        1,
+    )[0]
+    assert "memory_id uuid not null" in proposal_table
+    assert "source_snapshot text not null" in proposal_table
+    assert "content_snapshot text not null" in proposal_table
+    assert "references public.memories" not in proposal_table
+    assert "required_approvals smallint not null default 2" in proposal_table
+    assert "check (required_approvals = 2)" in proposal_table
+    assert "check (status in ('pending', 'deleted'))" in proposal_table
+    assert "primary key (proposal_id, approver_user_id)" in migration
+    assert re.search(
+        r"create unique index[^;]+\(memory_id\)\s+where status = 'pending'",
+        migration,
+        re.DOTALL,
+    )
+
+    request_rpc = migration.split(
+        "create or replace function public.request_shared_memory_deletion", 1
+    )[1].split(
+        "create or replace function public.approve_shared_memory_deletion_proposal",
+        1,
+    )[0]
+    assert "actor_id uuid := auth.uid()" in request_rpc
+    assert "actor_role not in ('editor', 'admin')" in request_rpc
+    assert "for update" in request_rpc
+    assert "source_snapshot" in request_rpc
+    assert "content_snapshot" in request_rpc
+    assert (
+        "on conflict on constraint "
+        "shared_memory_deletion_proposal_approvals_pkey" in request_rpc
+    )
+    assert "counted_approvals >= proposal_record.required_approvals" in request_rpc
+    assert "actor_role = 'admin'" in request_rpc
+    assert "delete from public.memories" in request_rpc
+    assert "'shared_memory_deletion_proposal_create'" in request_rpc
+    assert "'shared_memory_deletion_proposal_approve'" in request_rpc
+    assert "'shared_memory_delete'" in request_rpc
+
+    approve_rpc = migration.split(
+        "create or replace function public.approve_shared_memory_deletion_proposal",
+        1,
+    )[1].split(
+        "alter function public.request_shared_memory_deletion", 1
+    )[0]
+    assert "actor_id uuid := auth.uid()" in approve_rpc
+    assert "actor_role not in ('viewer', 'editor', 'admin')" in approve_rpc
+    assert "for update" in approve_rpc
+    assert (
+        "on conflict on constraint "
+        "shared_memory_deletion_proposal_approvals_pkey" in approve_rpc
+    )
+    assert "counted_approvals >= proposal_record.required_approvals" in approve_rpc
+    assert "actor_role = 'admin'" in approve_rpc
+    assert "delete from public.memories" in approve_rpc
+    assert "'shared_memory_deletion_proposal_approve'" in approve_rpc
+    assert "'shared_memory_delete'" in approve_rpc
+    assert "memory_exists boolean := false" in approve_rpc
+    assert "memory_exists := found" in approve_rpc
+    assert "or not memory_exists" in approve_rpc
+    assert "set status = 'deleted'" in approve_rpc
+
+    trigger_sql = migration.split(
+        "create or replace function public.close_shared_memory_deletion_proposal",
+        1,
+    )[1].split(
+        "create or replace function public.request_shared_memory_deletion", 1
+    )[0]
+    assert "update public.shared_memory_deletion_proposals" in trigger_sql
+    assert "where proposal.memory_id = old.id" in trigger_sql
+    assert "proposal.status = 'pending'" in trigger_sql
+    assert "after delete on public.memories" in trigger_sql
+
+    assert re.search(
+        r"revoke all privileges on table public\.shared_memory_deletion_proposals"
+        r"\s+from public, anon, authenticated",
+        migration,
+    )
+    assert re.search(
+        r"revoke all privileges on table public\.shared_memory_deletion_proposal_approvals"
+        r"\s+from public, anon, authenticated",
+        migration,
+    )
+    assert re.search(
+        r"grant execute on function public\.request_shared_memory_deletion\(uuid\)"
+        r"\s+to authenticated, service_role",
+        migration,
+    )
+    assert re.search(
+        r"grant execute on function public\.approve_shared_memory_deletion_proposal\(uuid\)"
+        r"\s+to authenticated, service_role",
+        migration,
+    )
+
+
+def test_shared_memory_deletion_schema_mirrors_migration_for_fresh_installs():
+    root = Path(__file__).resolve().parents[1]
+    migration = (
+        root / "migration_shared_memory_deletion_approvals.sql"
+    ).read_text(encoding="utf-8").lower()
+    schema = (root / "schema.sql").read_text(encoding="utf-8").lower()
+
+    required_fragments = (
+        "public.shared_memory_deletion_proposals",
+        "public.shared_memory_deletion_proposal_approvals",
+        "public.request_shared_memory_deletion",
+        "public.approve_shared_memory_deletion_proposal",
+        "public.close_shared_memory_deletion_proposal",
+        "shared_memory_deletion_one_pending_uidx",
+        "source_snapshot text not null",
+        "content_snapshot text not null",
+        "after delete on public.memories",
+    )
+    for fragment in required_fragments:
+        assert fragment in migration
+        assert fragment in schema
+    for sql in (migration, schema):
+        assert not re.search(r"(?m)^\s*(?:\+--|\*\*\*)", sql)
 
 
 def test_memory_ui_labels_personal_and_shared_content_explicitly():
@@ -2908,3 +3804,57 @@ def test_memory_ui_labels_personal_and_shared_content_explicitly():
     assert 'label: "개인기억"' in html
     assert 'label: "모두의 기억"' in html
     assert "작성자를 포함한 2명이 동의하면 모두에게 공개됩니다." in html
+
+
+def test_access_cards_support_address_labels_and_omit_empty_credentials():
+    html = (
+        Path(__file__).resolve().parents[1] / "static" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert '["URL", "주소", "링크", "호스트"]' in html
+    assert "extractHttpUrl(meta.url)" in html
+    assert 'if (!url && !id && !password) return "";' in html
+    assert 'meta.record_type === "credential" || id || password' in html
+    assert "const accessBody = isAccess ? accessDetails(m, meta)" in html
+
+
+def test_ingest_ui_confirms_similar_memories_before_saving():
+    html = (
+        Path(__file__).resolve().parents[1] / "static" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="similarMemoryOverlay"' in html
+    assert "유사한 기억이 있습니다" in html
+    assert "그래도 저장하시겠습니까?" in html
+    assert 'id="similarMemoryCancelBtn"' in html
+    assert 'id="similarMemoryConfirmBtn"' in html
+    assert "allow_similar: allowSimilar" in html
+    assert 'conflict.code === "similar_memories_found"' in html
+    assert "content.textContent = String(memory.snippet" in html
+    assert "let ingestBusy = false" in html
+    assert "if (!canWrite() || ingestBusy) return" in html
+
+
+def test_shared_memory_deletion_ui_labels_and_keeps_meal_expense_examples():
+    html = (
+        Path(__file__).resolve().parents[1] / "static" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="sharedDeletionApprovalPanel"' in html
+    assert "모두의 기억 삭제 승인" in html
+    assert "요청자를 포함한 2명이 동의하면 모두의 기억에서 삭제됩니다." in html
+    assert 'aria-label="모두의 기억 삭제 요청"' in html
+    assert ">삭제 요청</button>" in html
+    assert 'appendProposalBadge(labels, "scope-badge deletion", "삭제 승인")' in html
+    assert "/api/shared-memory-deletion-proposals" in html
+    deletion_approval_helper = html.split(
+        "function deletionProposalApprovalInfo", 1
+    )[1].split("function setSharedDeletionApprovalFeedback", 1)[0]
+    assert re.search(
+        r"const canApprove = isAdmin\(\)\s*"
+        r"\? explicitCanApprove !== false\s*"
+        r": !approvedByMe",
+        deletion_approval_helper,
+    )
+    assert "예) 식대에서 법인카드 사용 방식" in html
+    assert "예: 식대에서 법인카드는 어떻게 사용하고 정산하면 돼?" in html

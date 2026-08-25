@@ -27,9 +27,27 @@ from supabase import create_client
 from supabase.client import ClientOptions
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 logger = logging.getLogger(__name__)
+
+
+def is_production_environment(app_env: str) -> bool:
+    return app_env in {"production", "prod"} or bool(
+        os.getenv("RAILWAY_ENVIRONMENT")
+        or os.getenv("RENDER")
+        or os.getenv("VERCEL")
+        or os.getenv("VERCEL_ENV")
+    )
+
+
+def signup_enabled_for_environment(is_production: bool) -> bool:
+    setting = os.getenv("SIGNUP_ENABLED", "").strip().lower()
+    if not setting:
+        return not is_production
+    return setting in {"1", "true", "yes", "on"}
+
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"].strip()
@@ -38,14 +56,15 @@ SUPABASE_PUBLISHABLE_KEY = (
 ).strip()
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
-IS_PRODUCTION = APP_ENV in {"production", "prod"} or bool(
-    os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RENDER")
-)
+IS_PRODUCTION = is_production_environment(APP_ENV)
+SIGNUP_ENABLED = signup_enabled_for_environment(IS_PRODUCTION)
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 12)))
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")  # 1536 dims
 SIM_THRESHOLD = float(os.getenv("SIM_THRESHOLD", "0.25"))  # 이보다 낮으면 "없음" 처리
+SIMILAR_MEMORY_THRESHOLD = float(os.getenv("SIMILAR_MEMORY_THRESHOLD", "0.82"))
+SIMILAR_MEMORY_LIMIT = 3
 TOP_K = int(os.getenv("TOP_K", "8"))
 CATALOG_CACHE_TTL = int(os.getenv("CATALOG_CACHE_TTL", "30"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
@@ -77,7 +96,7 @@ _management_catalog_cache: dict[str, tuple[float, list[dict]]] = {}
 
 VALID_ROLES = {"viewer", "editor", "admin"}
 ROLE_LEVEL = {"viewer": 1, "editor": 2, "admin": 3}
-OPEN_PATHS = {"/api/login", "/api/signup", "/healthz"}
+OPEN_PATHS = {"/api/config", "/api/login", "/api/signup", "/healthz"}
 PROTECTED_PAGE_ACTIONS = {"/auth-architecture": "admin"}
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_ATTEMPTS = 5
@@ -356,6 +375,22 @@ def needs_shared_approval_migration(exc: Exception) -> bool:
     )
 
 
+def needs_shared_deletion_approval_migration(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        name in message
+        for name in (
+            '42702',
+            'column reference "proposal_id" is ambiguous',
+            "shared_memory_deletion_proposals",
+            "shared_memory_deletion_proposal_approvals",
+            "request_shared_memory_deletion",
+            "approve_shared_memory_deletion_proposal",
+            "close_shared_memory_deletion_proposal",
+        )
+    )
+
+
 def needs_ai_usage_migration(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(
@@ -503,6 +538,9 @@ AI_USAGE_MIGRATION_MESSAGE = (
 )
 SHARED_APPROVAL_MIGRATION_MESSAGE = (
     "Supabase에서 migration_shared_memory_approvals.sql을 실행하세요."
+)
+SHARED_DELETION_APPROVAL_MIGRATION_MESSAGE = (
+    "Supabase에서 migration_shared_memory_deletion_approvals.sql을 실행하세요."
 )
 AI_USES_EXHAUSTED_MESSAGE = (
     "사용 횟수를 모두 사용했습니다. 관리자에게 충전을 요청하세요."
@@ -765,6 +803,12 @@ def resolve_login_email(username: str) -> str:
 
 @app.post("/api/signup")
 def signup(req: SignupRequest, request: Request, response: Response):
+    if not SIGNUP_ENABLED:
+        raise HTTPException(
+            403,
+            "현재는 관리자에게 발급받은 계정으로만 로그인할 수 있습니다.",
+        )
+
     username = normalize_username(req.username)
     email = req.email.strip().lower()
     password = req.password
@@ -831,6 +875,11 @@ def signup(req: SignupRequest, request: Request, response: Response):
             else "회원가입과 로그인이 완료되었습니다."
         ),
     }
+
+
+@app.get("/api/config")
+def public_config():
+    return {"signup_enabled": SIGNUP_ENABLED}
 
 
 @app.post("/api/login")
@@ -1009,6 +1058,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 class IngestRequest(BaseModel):
     text: str
     scope: Literal["shared", "personal"] = "personal"
+    # None keeps older API clients compatible. The web UI sends False first
+    # and True only after the user accepts a similarity warning.
+    allow_similar: Optional[bool] = None
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -1074,6 +1126,51 @@ def approve_shared_proposal(db, proposal_id: str) -> dict:
     if not row:
         raise HTTPException(502, "공유 기억 승인 결과를 확인하지 못했습니다.")
     return row
+
+
+def run_shared_memory_deletion_rpc(
+    db,
+    rpc_name: str,
+    parameter_name: str,
+    target_id: str,
+) -> dict:
+    try:
+        normalized_id = str(uuid.UUID(target_id))
+    except ValueError:
+        raise HTTPException(404, "모두의 기억 삭제 요청을 찾지 못했습니다.")
+
+    try:
+        result = db.rpc(
+            rpc_name,
+            {parameter_name: normalized_id},
+        ).execute()
+    except Exception as exc:
+        logger.exception("Failed to process shared-memory deletion approval")
+        if needs_shared_deletion_approval_migration(exc):
+            raise HTTPException(
+                503,
+                SHARED_DELETION_APPROVAL_MIGRATION_MESSAGE,
+            )
+        message = str(exc).lower()
+        if "42501" in message or "cannot request" in message or "cannot approve" in message:
+            raise HTTPException(403, "모두의 기억 삭제 권한이 없습니다.")
+        if "not found" in message or "p0002" in message:
+            raise HTTPException(404, "모두의 기억 삭제 요청을 찾지 못했습니다.")
+        raise HTTPException(502, "모두의 기억 삭제 승인 처리에 실패했습니다.")
+
+    row = first_rpc_row(result)
+    if not row:
+        raise HTTPException(502, "모두의 기억 삭제 승인 결과를 확인하지 못했습니다.")
+    status = str(row.get("proposal_status") or "pending").lower()
+    deleted = row.get("deleted") is True or status == "deleted"
+    return {
+        "status": "deleted" if deleted else status,
+        "deleted": deleted,
+        "pending_approval": not deleted and status == "pending",
+        "proposal_id": row.get("proposal_id"),
+        "approval_count": int(row.get("approval_count") or 0),
+        "required_approvals": int(row.get("required_approvals") or 2),
+    }
 
 
 def invalidate_catalog_cache() -> None:
@@ -1146,7 +1243,8 @@ def memory_is_expired(item: dict, now: Optional[datetime] = None) -> bool:
 
 SEARCH_STOPWORDS = {
     "알려줘", "알려", "무엇", "뭐야", "뭐지", "주소는", "주소", "정보", "관련",
-    "현재", "저장", "내용", "대한", "있는", "해줘", "보여줘", "please",
+    "url", "링크", "링크는", "현재", "저장", "내용", "대한", "있는", "해줘",
+    "보여줘", "please",
 }
 
 
@@ -1186,6 +1284,19 @@ SECTION_TYPES = {
     "notes": {"note"},
 }
 
+HTTP_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+URL_TRAILING_PUNCTUATION = ".,;:!?)]}…"
+
+
+def extract_http_url(*values: object) -> str:
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        match = HTTP_URL_PATTERN.search(value)
+        if match:
+            return match.group(0).rstrip(URL_TRAILING_PUNCTUATION)
+    return ""
+
 
 def iso_date(value: object) -> Optional[str]:
     if not isinstance(value, str):
@@ -1218,15 +1329,29 @@ def normalize_metadata(record: dict) -> dict:
     if record_type not in VALID_RECORD_TYPES:
         record_type = infer_record_type(record.get("content") or "", meta)
     meta["record_type"] = record_type
+    url = extract_http_url(
+        meta.get("url"),
+        meta.get("address"),
+        meta.get("주소"),
+        meta.get("host"),
+        meta.get("호스트"),
+        record.get("content"),
+    )
+    if url:
+        meta["url"] = url
     return meta
-
 
 def infer_record_type(content: str, meta: Optional[dict] = None) -> str:
     meta = meta or {}
     lowered = content.lower()
     if "[서비스 계정]" in content or "비밀번호:" in content or "임시pw" in lowered:
         return "credential"
-    if "[서버 접속]" in content or "[개발 환경]" in content or "호스트:" in content:
+    if (
+        "[서버 접속]" in content
+        or "[개발 환경]" in content
+        or "호스트:" in content
+        or re.search(r"(?:\[유형\]|유형\s*:)[ \t]*(?:업무[ \t]*시스템|시스템)", content)
+    ):
         return "system"
     if "[강의 과정]" in content or ("과정명:" in content and "강의 목록:" in content):
         return "course"
@@ -1267,6 +1392,16 @@ def effective_metadata(item: dict) -> dict:
         record_type if record_type in VALID_RECORD_TYPES
         else infer_record_type(content, meta)
     )
+    url = extract_http_url(
+        meta.get("url"),
+        meta.get("address"),
+        meta.get("주소"),
+        meta.get("host"),
+        meta.get("호스트"),
+        content,
+    )
+    if url:
+        meta["url"] = url
     return meta
 
 
@@ -1314,7 +1449,10 @@ PARSER_SYSTEM = """당신은 텍스트 파서입니다. 사용자가 붙여넣�
    - status: "할 일"/"진행 중"/"완료"/"보류"/"참고" 중 하나
    - work_date: 실제 업무 기준일 YYYY-MM-DD, due_date: 마감일 YYYY-MM-DD 또는 null
    - channel, subject, msg_date, participants
+   - url: 본문에 있는 http:// 또는 https:// 주소. 원문 URL을 한 글자도 바꾸거나 생략하지 말 것
    날짜가 없으면 work_date는 오늘 날짜를 사용. 한 청크에 상태가 섞이면 상태별로 청크를 분리.
+   `[제목]`, `[주소]`, `[URL]`처럼 대괄호로 표시된 필드도 같은 의미로 인식하고,
+   `[제목]`이 여러 번 나오면 제목별로 레코드를 분리할 것.
 6. 시효 판단: 내용이 특정 날짜에 종속되면(회의 일정, 마감, 이벤트, 기간 한정 공지)
    해당 레코드의 expires_at을 "이벤트 종료일 + 7일"의 ISO 날짜("YYYY-MM-DDT23:59:59+09:00")로 설정.
    시효가 없는 정보(담당자, 정책, 프로세스, 일반 지식)는 expires_at을 null로.
@@ -1419,7 +1557,7 @@ ANSWER_SYSTEM = """당신은 사용자의 개인 메모리 저장소를 검색�
 
 
 def load_answer_harness() -> str:
-    path = Path(__file__).with_name("harness.md")
+    path = BASE_DIR / "harness.md"
     try:
         return path.read_text(encoding="utf-8")
     except OSError:
@@ -1471,6 +1609,67 @@ def contextualize_search_question(question: str, history: Optional[list[dict]]) 
         return question
 
 
+def find_similar_memories(
+    text: str,
+    scope: Literal["shared", "personal"],
+    db,
+    user: dict,
+) -> list[dict]:
+    try:
+        query_embedding = embed([text])[0]
+    except Exception:
+        logger.exception("Failed to create similarity-check embedding")
+        raise HTTPException(502, "유사 기억 확인에 실패했습니다. 잠시 후 다시 시도하세요.")
+
+    try:
+        result = db.rpc(
+            "match_memories",
+            {
+                "query_embedding": query_embedding,
+                "match_count": 10,
+                "filter_source": None,
+                "query_scope": scope,
+                "requesting_user_id": user["id"],
+            },
+        ).execute()
+    except Exception as exc:
+        logger.exception("Failed to search similar memories")
+        if needs_security_migration(exc):
+            raise HTTPException(503, MEMORY_MIGRATION_MESSAGE)
+        raise HTTPException(502, "유사 기억을 검색하지 못했습니다. 잠시 후 다시 시도하세요.")
+
+    candidates = []
+    for hit in result.data or []:
+        try:
+            similarity = float(hit.get("similarity") or 0)
+        except (TypeError, ValueError):
+            continue
+        if similarity < SIMILAR_MEMORY_THRESHOLD:
+            continue
+
+        metadata = effective_metadata(hit)
+        candidates.append({
+            "id": str(hit.get("id") or ""),
+            "scope": "personal" if hit.get("scope") == "personal" else "shared",
+            "source": normalize_source(hit.get("source")),
+            "snippet": str(hit.get("content") or "")[:360],
+            "similarity": round(max(0.0, min(1.0, similarity)), 3),
+            "created_at": str(hit.get("created_at") or ""),
+            "metadata": {
+                "person": str(metadata.get("person") or ""),
+                "project": str(metadata.get("project") or ""),
+                "work_date": str(metadata.get("work_date") or ""),
+                "tags": [
+                    tag for tag in (metadata.get("tags") or [])
+                    if isinstance(tag, str)
+                ][:4],
+            },
+        })
+        if len(candidates) >= SIMILAR_MEMORY_LIMIT:
+            break
+    return candidates
+
+
 # ---------- endpoints ----------
 
 @app.post("/api/ingest")
@@ -1489,6 +1688,17 @@ def ingest(req: IngestRequest, request: Request):
 
     user = current_user(request)
     db = current_db(request)
+    if req.allow_similar is False:
+        similar_memories = find_similar_memories(text, req.scope, db, user)
+        if similar_memories:
+            raise HTTPException(
+                409,
+                {
+                    "code": "similar_memories_found",
+                    "message": "유사한 기억이 있습니다. 그래도 저장하시겠습니까?",
+                    "similar_memories": similar_memories,
+                },
+            )
     remaining_uses = consume_ai_use(user["id"])
     try:
         result = ingest_with_consumed_use(req, user, db)
@@ -1880,6 +2090,141 @@ def approve_shared_memory_proposal(proposal_id: str, request: Request):
     return proposal
 
 
+def load_shared_memory_deletion_proposals(
+    user: dict,
+    proposal_id: Optional[str] = None,
+    *,
+    page_size: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    try:
+        query = (
+            admin_sb.table("shared_memory_deletion_proposals")
+            .select(
+                "id,memory_id,source_snapshot,content_snapshot,"
+                "requested_by_user_id,status,required_approvals,"
+                "created_at,deleted_at"
+            )
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+        )
+        if proposal_id:
+            query = query.eq("id", str(uuid.UUID(proposal_id))).limit(1)
+            used_range = False
+        else:
+            query = query.eq("status", "pending")
+            range_method = getattr(query, "range", None)
+            used_range = callable(range_method)
+            if used_range:
+                query = range_method(offset, offset + page_size - 1)
+            else:
+                query = query.limit(offset + page_size)
+        proposals = query.execute().data or []
+        if not proposal_id and not used_range:
+            proposals = proposals[offset:offset + page_size]
+
+        proposal_ids = [row["id"] for row in proposals]
+        requester_ids = {
+            row.get("requested_by_user_id")
+            for row in proposals
+            if row.get("requested_by_user_id")
+        }
+        approvals = []
+        if proposal_ids:
+            approvals = (
+                admin_sb.table("shared_memory_deletion_proposal_approvals")
+                .select("proposal_id,approver_user_id")
+                .in_("proposal_id", proposal_ids)
+                .execute()
+                .data
+                or []
+            )
+        profiles = []
+        if requester_ids:
+            profiles = (
+                admin_sb.table("account_profiles")
+                .select("id,username")
+                .in_("id", list(requester_ids))
+                .execute()
+                .data
+                or []
+            )
+    except Exception as exc:
+        logger.exception("Failed to load shared-memory deletion proposals")
+        if needs_shared_deletion_approval_migration(exc):
+            raise HTTPException(503, SHARED_DELETION_APPROVAL_MIGRATION_MESSAGE)
+        raise HTTPException(502, "모두의 기억 삭제 승인 목록을 불러오지 못했습니다.")
+
+    username_by_id = {row.get("id"): row.get("username") for row in profiles}
+    approvers_by_proposal: dict[str, set[str]] = {}
+    for approval in approvals:
+        approvers_by_proposal.setdefault(
+            approval.get("proposal_id"), set()
+        ).add(approval.get("approver_user_id"))
+
+    result = []
+    for proposal in proposals:
+        approvers = approvers_by_proposal.get(proposal["id"], set())
+        approved_by_me = user["id"] in approvers
+        status = str(proposal.get("status") or "pending").lower()
+        result.append({
+            **proposal,
+            "source": normalize_source(proposal.get("source_snapshot")),
+            "content": proposal.get("content_snapshot") or "",
+            "requested_by_username": username_by_id.get(
+                proposal.get("requested_by_user_id"), "unknown"
+            ),
+            "approval_count": len(approvers),
+            "required_approvals": int(proposal.get("required_approvals") or 2),
+            "approved_by_me": approved_by_me,
+            "can_approve": status == "pending" and (
+                not approved_by_me or user.get("role") == "admin"
+            ),
+        })
+    return result
+
+
+@app.get("/api/shared-memory-deletion-proposals")
+def list_shared_memory_deletion_proposals(
+    request: Request,
+    limit: int = 100,
+    offset: int = 0,
+):
+    if limit < 1 or limit > 100:
+        raise HTTPException(422, "limit은 1 이상 100 이하여야 합니다.")
+    if offset < 0:
+        raise HTTPException(422, "offset은 0 이상이어야 합니다.")
+    user = current_user(request)
+    page = load_shared_memory_deletion_proposals(
+        user,
+        page_size=limit + 1,
+        offset=offset,
+    )
+    has_more = len(page) > limit
+    return {
+        "proposals": page[:limit],
+        "has_more": has_more,
+        "next_offset": offset + limit if has_more else None,
+    }
+
+
+@app.post("/api/shared-memory-deletion-proposals/{proposal_id}/approve")
+def approve_shared_memory_deletion_proposal(
+    proposal_id: str,
+    request: Request,
+):
+    user = current_user(request)
+    result = run_shared_memory_deletion_rpc(
+        current_db(request),
+        "approve_shared_memory_deletion_proposal",
+        "target_proposal_id",
+        proposal_id,
+    )
+    if result["deleted"]:
+        invalidate_catalog_cache()
+    return result
+
+
 def all_tags(rows: list[dict]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -2186,6 +2531,14 @@ def memory_can_modify(item: dict, user: dict) -> bool:
     return item.get("scope") in {None, "shared"} and user.get("role") == "admin"
 
 
+def memory_can_request_delete(item: dict, user: dict) -> bool:
+    return (
+        item.get("scope") == "shared"
+        and item.get("publication_status") in {None, "published"}
+        and role_allows(user.get("role", ""), "write")
+    )
+
+
 @app.get("/api/memories")
 def list_memories(
     request: Request,
@@ -2285,6 +2638,7 @@ def list_memories(
             "publication_status": item.get("publication_status") or "published",
             "can_edit": memory_can_modify(item, user),
             "can_delete": memory_can_modify(item, user),
+            "can_request_delete": memory_can_request_delete(item, user),
         }
         for item in items
     ]
@@ -2445,35 +2799,63 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
 def delete_memory(memory_id: str, request: Request):
     user = current_user(request)
     db = current_db(request)
+    try:
+        normalized_memory_id = str(uuid.UUID(memory_id))
+    except ValueError:
+        raise HTTPException(404, "삭제할 기억을 찾지 못했습니다.")
+
     existing_query = (
         db.table("memories")
-        .select("id,scope,owner_user_id,created_by_user_id")
-        .eq("id", memory_id)
+        .select(
+            "id,scope,owner_user_id,created_by_user_id,publication_status"
+        )
+        .eq("id", normalized_memory_id)
         .limit(1)
     )
     existing = visible_memories_query(existing_query, user["id"]).execute().data or []
-    if not existing or not memory_can_modify(existing[0], user):
+    if not existing:
         raise HTTPException(404, "삭제할 기억을 찾지 못했습니다.")
 
-    write_db = (
-        admin_sb
-        if user["role"] == "admin" and existing[0].get("scope") == "shared"
-        else db
+    item = existing[0]
+    if item.get("scope") == "shared":
+        if not memory_can_request_delete(item, user):
+            raise HTTPException(403, "모두의 기억 삭제 권한이 없습니다.")
+        result = run_shared_memory_deletion_rpc(
+            db,
+            "request_shared_memory_deletion",
+            "target_memory_id",
+            normalized_memory_id,
+        )
+        if result["deleted"]:
+            invalidate_catalog_cache()
+        return result
+
+    if not memory_can_modify(item, user):
+        raise HTTPException(404, "삭제할 기억을 찾지 못했습니다.")
+
+    delete_query = (
+        db.table("memories")
+        .delete()
+        .eq("id", normalized_memory_id)
+        .eq("scope", "personal")
+        .eq("owner_user_id", user["id"])
     )
-    delete_query = write_db.table("memories").delete().eq("id", memory_id)
-    if existing[0].get("scope") == "personal":
-        delete_query = delete_query.eq("owner_user_id", user["id"])
-    else:
-        delete_query = delete_query.eq("scope", "shared")
     result = delete_query.execute()
     if not result.data:
         raise HTTPException(404, "삭제할 기억을 찾지 못했습니다.")
     invalidate_catalog_cache()
     write_audit(
         user["username"], user["role"], "memory_delete",
-        actor_user_id=user["id"], memory_id=memory_id,
+        actor_user_id=user["id"], memory_id=normalized_memory_id,
     )
-    return {"deleted": memory_id}
+    return {
+        "status": "deleted",
+        "deleted": True,
+        "pending_approval": False,
+        "proposal_id": None,
+        "approval_count": 0,
+        "required_approvals": 0,
+    }
 
 
 @app.get("/api/audit-logs")
@@ -2495,15 +2877,15 @@ def audit_logs(limit: int = 100):
     return result.data or []
 
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 @app.get("/")
 def index():
-    return FileResponse("static/index.html")
+    return FileResponse(BASE_DIR / "static" / "index.html")
 
 
 @app.get("/auth-architecture")
 def auth_architecture(request: Request):
     require_admin_user(request)
-    return FileResponse("static/auth-architecture.html")
+    return FileResponse(BASE_DIR / "static" / "auth-architecture.html")

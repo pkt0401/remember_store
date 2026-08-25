@@ -83,7 +83,21 @@ class _FakeAdminAuth:
 
     def create_user(self, attributes):
         self.client.create_calls.append(dict(attributes))
-        return SimpleNamespace(user=SimpleNamespace(id=ADMIN_ID))
+        if self.client.create_user_error:
+            raise self.client.create_user_error
+        user = _auth_user(
+            ADMIN_ID,
+            attributes["email"],
+            user_metadata=attributes.get("user_metadata") or {},
+            app_metadata=attributes.get("app_metadata") or {},
+        )
+        self.client.auth_users.append(user)
+        self.client.profiles.append({
+            "id": ADMIN_ID,
+            "username": user.user_metadata.get("username"),
+            "email": attributes["email"],
+        })
+        return SimpleNamespace(user=user)
 
     def list_users(self, *, page, per_page):
         self.client.list_calls.append((page, per_page))
@@ -109,6 +123,18 @@ class _FakeAdminAuth:
                 setattr(user, field, current)
         return SimpleNamespace(user=user)
 
+    def delete_user(self, user_id):
+        self.client.delete_calls.append(user_id)
+        if self.client.delete_user_error:
+            raise self.client.delete_user_error
+        self.client.auth_users = [
+            user for user in self.client.auth_users if user.id != user_id
+        ]
+        self.client.profiles = [
+            profile for profile in self.client.profiles
+            if profile.get("id") != user_id
+        ]
+
 
 class _FakeClient:
     def __init__(
@@ -118,6 +144,8 @@ class _FakeClient:
         auth_users=None,
         profile_update_error=None,
         list_users_error=None,
+        create_user_error=None,
+        delete_user_error=None,
     ):
         self.profiles = [dict(profile)] if profile else []
         if auth_users is None and profile:
@@ -134,8 +162,11 @@ class _FakeClient:
         self.auth_users = list(auth_users or [])
         self.profile_update_error = profile_update_error
         self.list_users_error = list_users_error
+        self.create_user_error = create_user_error
+        self.delete_user_error = delete_user_error
         self.create_calls = []
         self.update_calls = []
+        self.delete_calls = []
         self.profile_updates = []
         self.list_calls = []
         self.get_calls = []
@@ -170,26 +201,77 @@ def _arrange_cli(monkeypatch, client, *, email="Admin@Example.COM", passwords=()
 
 def test_creates_reserved_admin_with_server_controlled_attributes(monkeypatch, capsys):
     client = _FakeClient()
-    _arrange_cli(monkeypatch, client)
+    _arrange_cli(monkeypatch, client, passwords=("Ab1!5678", "Ab1!5678"))
+    monkeypatch.setattr(
+        bootstrap_admin.secrets,
+        "token_hex",
+        lambda _size: "0123456789ab",
+    )
 
     bootstrap_admin.main()
 
     assert client.create_calls == [{
         "email": "admin@example.com",
-        "password": "very-secure-password",
+        "password": "Ab1!5678",
         "email_confirm": True,
+        "user_metadata": {
+            "username": "admin-bootstrap-0123456789ab",
+            "email": "admin@example.com",
+        },
+    }]
+    assert client.update_calls == [(ADMIN_ID, {
         "user_metadata": {
             "username": "admin",
             "email": "admin@example.com",
         },
         "app_metadata": {"app_role": "admin"},
+    })]
+    assert client.profile_updates == [{
+        "values": {"username": "admin", "email": "admin@example.com"},
+        "filters": [
+            ("id", ADMIN_ID),
+            ("username", "admin-bootstrap-0123456789ab"),
+        ],
     }]
-    assert client.update_calls == []
-    assert client.profile_updates == []
+    assert client.delete_calls == []
     assert (
         capsys.readouterr().out.strip()
         == f"Admin account created: username=admin, email=admin@example.com, id={ADMIN_ID}"
     )
+
+
+def test_new_admin_promotion_failure_removes_temporary_account(monkeypatch):
+    client = _FakeClient(profile_update_error=RuntimeError("profile update failed"))
+    _arrange_cli(monkeypatch, client)
+    monkeypatch.setattr(
+        bootstrap_admin.secrets,
+        "token_hex",
+        lambda _size: "0123456789ab",
+    )
+
+    with pytest.raises(SystemExit, match="임시 계정을 삭제했습니다"):
+        bootstrap_admin.main()
+
+    assert len(client.create_calls) == 1
+    assert client.update_calls == [
+        (ADMIN_ID, {
+            "user_metadata": {
+                "username": "admin",
+                "email": "admin@example.com",
+            },
+            "app_metadata": {"app_role": "admin"},
+        }),
+        (ADMIN_ID, {
+            "user_metadata": {
+                "username": "admin-bootstrap-0123456789ab",
+                "email": "admin@example.com",
+            },
+            "app_metadata": {"app_role": None},
+        }),
+    ]
+    assert client.delete_calls == [ADMIN_ID]
+    assert client.auth_users == []
+    assert client.profiles == []
 
 
 def test_updates_existing_admin_auth_and_profile_email(monkeypatch, capsys):
@@ -400,7 +482,7 @@ def test_auth_user_list_error_stops_before_any_mutation(monkeypatch):
 @pytest.mark.parametrize(
     ("passwords", "message"),
     [
-        (("too-short", "too-short"), "Admin password must be 12-128 characters."),
+        (("short7!", "short7!"), "Admin password must be 8-128 characters."),
         (("first-password", "second-password"), "Passwords do not match."),
     ],
 )
@@ -423,4 +505,100 @@ def test_rejects_short_or_mismatched_password_before_connecting(
 
     assert connect_attempted is False
     assert client.create_calls == []
+    assert client.update_calls == []
+
+
+def test_reports_non_utf8_password_input_without_traceback(monkeypatch):
+    client = _FakeClient()
+    _arrange_cli(monkeypatch, client)
+    monkeypatch.setattr(
+        bootstrap_admin.getpass,
+        "getpass",
+        lambda _prompt: (_ for _ in ()).throw(
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="한글을 제외하고 영문, 숫자"):
+        bootstrap_admin.main()
+
+    assert client.create_calls == []
+
+
+class _AdminApiError(Exception):
+    def __init__(self, message, *, code="unexpected_failure", status=500):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.status = status
+
+
+def test_format_admin_error_gives_actionable_weak_password_guidance():
+    error = _AdminApiError(
+        "Password should contain at least one character of each type",
+        code="weak_password",
+        status=422,
+    )
+
+    message = bootstrap_admin.format_admin_error(error)
+
+    assert "비밀번호" in message
+    assert "정책" in message
+    assert "다시" in message
+    assert "이메일 중복과 Supabase Auth 설정" not in message
+
+
+def test_format_admin_error_explains_database_trigger_migrations_and_diagnostics(
+    monkeypatch,
+):
+    service_key = "service-role-secret-that-must-not-leak"
+    publishable_key = "publishable-secret-that-must-not-leak"
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", service_key)
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_KEY", publishable_key)
+    error = _AdminApiError(
+        "Database error creating new user in trigger "
+        "auth_users_require_managed_signup; "
+        f"service={service_key}; publishable={publishable_key}; "
+        + ("upstream diagnostic " * 100),
+        code="unexpected_failure",
+        status=500,
+    )
+
+    message = bootstrap_admin.format_admin_error(error)
+
+    assert "migration_remove_legacy_signup_guard.sql" in message
+    assert "migration_auth_accounts.sql" in message
+    assert "500" in message
+    assert "unexpected_failure" in message
+    assert "database error creating new user" in message.lower()
+    assert "trigger" in message.lower()
+    assert service_key not in message
+    assert publishable_key not in message
+    assert message.count("[redacted]") >= 2
+    assert len(message) <= 600
+
+
+def test_main_surfaces_sanitized_admin_create_error(monkeypatch):
+    service_key = "bootstrap-service-role-secret"
+    error = _AdminApiError(
+        "Database error saving new user from create trigger; "
+        f"credential={service_key}",
+        code="unexpected_failure",
+        status=500,
+    )
+    client = _FakeClient(create_user_error=error)
+    _arrange_cli(monkeypatch, client)
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", service_key)
+
+    with pytest.raises(SystemExit) as raised:
+        bootstrap_admin.main()
+
+    message = str(raised.value)
+    assert "migration_remove_legacy_signup_guard.sql" in message
+    assert "migration_auth_accounts.sql" in message
+    assert "unexpected_failure" in message
+    assert service_key not in message
+    assert "[redacted]" in message
+    assert len(message) <= 600
+    assert len(client.create_calls) == 1
     assert client.update_calls == []

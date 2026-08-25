@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastapi",
+  "fluid": true,
+  "regions": ["icn1"],
+  "functions": {
+    "main.py": {
+      "maxDuration": 300,
+      "includeFiles": "{static/**,harness.md}",
+      "excludeFiles": "{.env,.env.*,tests/**,scripts/**,*.sql,requirements-dev.txt,Dockerfile,.dockerignore,.private/**,.venv/**,.pytest_cache/**}"
+    }
+  }
+}

@@ -5,6 +5,7 @@ import argparse
 import getpass
 import os
 import re
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -18,6 +19,90 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class BootstrapSafetyError(RuntimeError):
     """A deliberate stop whose message should be shown to the operator."""
+
+
+def format_admin_error(exc):
+    """Return an actionable Supabase error without exposing configured keys."""
+    def finish(message):
+        return message[:600]
+
+    code = str(getattr(exc, "code", "") or "").strip()
+    status = str(getattr(exc, "status", "") or "").strip()
+    detail = str(getattr(exc, "message", "") or str(exc) or "").strip()
+    detail = re.sub(r"[\r\n\t]+", " ", detail)
+    detail = re.sub(r"\s{2,}", " ", detail)
+    for name in ("SUPABASE_SERVICE_KEY", "SUPABASE_PUBLISHABLE_KEY"):
+        secret = os.getenv(name, "").strip()
+        if secret:
+            detail = detail.replace(secret, "[redacted]")
+    detail = re.sub(
+        r"(?i)(bearer\s+)[a-z0-9._~-]{20,}",
+        r"\1[redacted]",
+        detail,
+    )[:600]
+
+    fingerprint = " ".join((code, status, detail)).lower()
+    context = ", ".join(
+        part for part in (
+            f"code={code}" if code else "",
+            f"status={status}" if status else "",
+            detail,
+        )
+        if part
+    )
+    suffix = f" ({context})" if context else ""
+
+    if any(
+        marker in fingerprint
+        for marker in (
+            "weak_password",
+            "weak password",
+            "password should",
+            "password must",
+            "password is too",
+        )
+    ):
+        return finish(
+            "관리자 비밀번호가 Supabase 비밀번호 보안 정책을 충족하지 않습니다. "
+            "8자 이상으로 대·소문자, 숫자, 특수문자를 조합해 다시 실행하세요."
+            f"{suffix}"
+        )
+
+    if any(
+        marker in fingerprint
+        for marker in (
+            "email_exists",
+            "already registered",
+            "already been registered",
+            "user already exists",
+        )
+    ):
+        return finish(
+            "해당 이메일을 사용하는 Supabase Auth 계정이 이미 있습니다. "
+            "계정 목록과 account_profiles 연결 상태를 확인하세요."
+            f"{suffix}"
+        )
+
+    if status == "500" or any(
+        marker in fingerprint
+        for marker in (
+            "database error",
+            "db error",
+            "trigger",
+            "unexpected_failure",
+        )
+    ):
+        return finish(
+            "Supabase Auth 데이터베이스 트리거 오류로 관리자 생성에 실패했습니다. "
+            "SQL Editor에서 migration_remove_legacy_signup_guard.sql과 "
+            "migration_auth_accounts.sql을 순서대로 실행한 뒤 다시 시도하세요."
+            f"{suffix}"
+        )
+
+    return finish(
+        "관리자 생성/갱신에 실패했습니다. Supabase Auth 설정과 서버 로그를 "
+        f"확인하세요.{suffix}"
+    )
 
 
 def admin_profile(client):
@@ -93,16 +178,38 @@ def metadata_dict(user, field):
 
 
 def admin_attributes(email, password, *, existing_user=None):
+    attributes = admin_metadata_attributes(email, existing_user=existing_user)
+    attributes.update({
+        "email": email,
+        "password": password,
+        "email_confirm": True,
+    })
+    return attributes
+
+
+def admin_metadata_attributes(email, *, existing_user=None):
     user_metadata = metadata_dict(existing_user, "user_metadata")
     app_metadata = metadata_dict(existing_user, "app_metadata")
     user_metadata.update({"username": "admin", "email": email})
     app_metadata["app_role"] = "admin"
     return {
+        "user_metadata": user_metadata,
+        "app_metadata": app_metadata,
+    }
+
+
+def temporary_admin_username():
+    return f"admin-bootstrap-{secrets.token_hex(6)}"
+
+
+def temporary_admin_attributes(email, password, username):
+    # The profile trigger can safely create this non-reserved identity before
+    # the trusted admin app_metadata is persisted by GoTrue.
+    return {
         "email": email,
         "password": password,
         "email_confirm": True,
-        "user_metadata": user_metadata,
-        "app_metadata": app_metadata,
+        "user_metadata": {"username": username, "email": email},
     }
 
 
@@ -151,10 +258,16 @@ def main() -> None:
     if len(email) > 254 or not EMAIL_PATTERN.fullmatch(email):
         raise SystemExit("Enter a valid admin email address.")
 
-    password = getpass.getpass("Admin password (12-128 characters): ")
-    confirmation = getpass.getpass("Confirm admin password: ")
-    if not 12 <= len(password) <= 128:
-        raise SystemExit("Admin password must be 12-128 characters.")
+    try:
+        password = getpass.getpass("Admin password (8-128 characters): ")
+        confirmation = getpass.getpass("Confirm admin password: ")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(
+            "비밀번호 입력 인코딩을 읽지 못했습니다. 한글을 제외하고 영문, 숫자, "
+            "ASCII 특수문자로 직접 입력하세요."
+        ) from exc
+    if not 8 <= len(password) <= 128:
+        raise SystemExit("Admin password must be 8-128 characters.")
     if password != confirmation:
         raise SystemExit("Passwords do not match.")
 
@@ -253,16 +366,68 @@ def main() -> None:
                 ) from profile_exc
             action = "promoted"
         else:
-            attributes = admin_attributes(email, password)
+            temporary_username = temporary_admin_username()
+            attributes = temporary_admin_attributes(
+                email,
+                password,
+                temporary_username,
+            )
             result = client.auth.admin.create_user(attributes)
             user_id = str(getattr(result.user, "id", "") or "")
+            if not user_id:
+                raise BootstrapSafetyError(
+                    "Supabase가 생성된 임시 관리자 계정의 UUID를 반환하지 않았습니다."
+                )
+
+            created_user = result.user
+            original_user_metadata = metadata_dict(created_user, "user_metadata")
+            original_app_metadata = metadata_dict(created_user, "app_metadata")
+            try:
+                client.auth.admin.update_user_by_id(
+                    user_id,
+                    admin_metadata_attributes(email, existing_user=created_user),
+                )
+                update_profile(
+                    client,
+                    user_id,
+                    temporary_username,
+                    {"username": "admin", "email": email},
+                )
+            except Exception as promotion_exc:
+                rollback_error = None
+                try:
+                    rollback_promoted_metadata(
+                        client,
+                        user_id,
+                        original_user_metadata,
+                        original_app_metadata,
+                    )
+                except Exception as exc:
+                    rollback_error = exc
+
+                try:
+                    client.auth.admin.delete_user(user_id)
+                except Exception as delete_exc:
+                    if rollback_error:
+                        raise BootstrapSafetyError(
+                            "관리자 승격, 권한 롤백, 임시 계정 삭제가 모두 실패했습니다. "
+                            f"Supabase에서 사용자 {user_id}를 즉시 확인하세요."
+                        ) from delete_exc
+                    raise BootstrapSafetyError(
+                        "관리자 승격에 실패했고 권한은 회수했지만 임시 계정을 "
+                        f"삭제하지 못했습니다. Supabase에서 사용자 {user_id}를 "
+                        "삭제하세요."
+                    ) from delete_exc
+
+                raise BootstrapSafetyError(
+                    "관리자 2단계 승격에 실패해 생성된 임시 계정을 삭제했습니다. "
+                    f"{format_admin_error(promotion_exc)}"
+                ) from promotion_exc
             action = "created"
     except BootstrapSafetyError as exc:
         raise SystemExit(str(exc)) from exc
     except Exception as exc:
-        raise SystemExit(
-            "관리자 생성/갱신에 실패했습니다. 이메일 중복과 Supabase Auth 설정을 확인하세요."
-        ) from exc
+        raise SystemExit(format_admin_error(exc)) from exc
 
     if not user_id:
         raise SystemExit("Supabase가 관리자 UUID를 반환하지 않았습니다.")

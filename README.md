@@ -17,6 +17,7 @@ Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저
 - 제목, 상태 강조, 불릿과 링크를 지원하는 안전한 제한 Markdown 렌더링
 - `오늘`, `어제`, `이번 주`, `지난주`, `이번 달` 기반 날짜 검색
 - 기억 공간별 SHA-256 중복 처리와 만료 기억 정리
+- 저장 전 의미 유사 기억 확인과 사용자 확인 후 저장
 - 저장된 본문과 담당자·프로젝트·상태·날짜·유형·태그 수정 및 재임베딩
 - 답변 근거 원문 조회
 - OpenAI 응답을 실시간으로 표시하는 스트리밍 채팅
@@ -25,18 +26,26 @@ Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저
 - 모든 계정에 초기 AI 사용권 10회 지급 및 관리자 전용 10회 충전
 - 아이디 기반 로그인과 앱 내 이메일/비밀번호 회원가입
 - 일반 가입에서 예약된 `admin` 관리자 아이디와 안전한 초기 관리자 생성 도구
-- 작성자 포함 서로 다른 2명의 동의 후 공개되는 모두의 기억과 계정 UUID별 개인기억 분리
+- 작성자 포함 서로 다른 2명의 동의 후 공개되는 모두의 기억과 2인 동의 기반 공유 기억 삭제
+- 계정 UUID별 개인기억 분리와 소유자의 즉시 수정·삭제
 - OpenAI API 키 형태의 입력 차단과 기존 키 포함 기억 격리
 
 ## 처리 구조
 
 ```text
 붙여넣기
+  -> 선택한 기억 범위에서 유사 기억 검색
+  -> 유사 후보가 있으면 사용자 확인 후 계속
   -> OpenAI 텍스트 분석 및 구조화
   -> OpenAI 임베딩 생성
   -> 개인기억: Supabase PostgreSQL + pgvector에 즉시 저장
   -> 모두의 기억: 작성자 1차 동의 -> 다른 사용자 2차 동의 -> 전체 공개
   -> 관리자 모두의 기억: 승인 없이 즉시 공개
+
+삭제
+  -> 개인기억: 소유자가 즉시 삭제
+  -> 모두의 기억: 요청자 1차 동의 -> 다른 사용자 2차 동의 -> 실제 기억 삭제
+  -> 관리자 모두의 기억: 승인 없이 즉시 삭제
 
 질문
   -> 문맥 의존 후속 질문만 독립 검색문으로 재작성
@@ -71,7 +80,8 @@ Supabase SQL Editor에서 설치 상태에 맞는 SQL을 실행합니다.
 - 신규 프로젝트: `schema.sql`
 - 기존 프로젝트: `migration_security.sql`, `migration_memory_scopes.sql`,
   `migration_auth_accounts.sql`, `migration_ai_usage_credits.sql`,
-  `migration_shared_memory_approvals.sql` 순서로 실행
+  `migration_shared_memory_approvals.sql`,
+  `migration_shared_memory_deletion_approvals.sql` 순서로 실행
 - `계정은 Memory Agent 회원가입 API를 통해 생성해야 합니다.` 오류가 발생하는
   기존 프로젝트: `migration_remove_legacy_signup_guard.sql`을 먼저 실행
 - `migration_expiry.sql`은 과거 설치용 유통기한 마이그레이션이며,
@@ -97,10 +107,17 @@ API 키 형태가 포함된 행은 일반 기억에서 제거합니다. 키 원�
 않으며, 함수 실행 권한은 서버의 `service_role`에만 부여합니다.
 
 `migration_shared_memory_approvals.sql`은 모두의 기억 제안과 사용자별 동의를
-저장합니다. 작성자의 동의를 자동으로 첫 번째 표로 기록하고, 다른 사용자의 두 번째
+저장합니다. 작성자의 동의를 자동으로 첫 번째 동의로 기록하고, 다른 사용자의 두 번째
 동의가 들어오면 하나의 트랜잭션에서 제안에 포함된 기억을 공개합니다. 승인 대기
 내용은 일반 기억 목록과 AI 검색에서 제외되며, 기존 공유 기억은 공개 상태로
 유지됩니다.
+
+`migration_shared_memory_deletion_approvals.sql`은 공개된 모두의 기억에 대한 삭제
+요청과 사용자별 동의를 저장합니다. 요청자의 동의를 첫 번째 동의로 자동 기록하고,
+다른 사용자의 두 번째 동의가 들어오면 하나의 트랜잭션에서 실제 기억을 삭제합니다.
+승인 대기 중인 기억은 계속 목록·검색·AI 답변에 포함됩니다. 삭제 뒤에도 요청 당시의
+본문·출처 스냅샷과 승인 기록은 감사 이력으로 남으며, 관리자는 승인 없이 즉시
+삭제할 수 있습니다.
 
 Supabase Auth에서 이메일/비밀번호 로그인을 활성화합니다. Confirm email이 켜져 있으면
 가입자는 확인 메일의 링크를 누른 뒤 로그인하고, 꺼져 있으면 가입 직후 자동 로그인됩니다.
@@ -116,7 +133,7 @@ SQL 마이그레이션을 실행한 뒤 다음 명령으로 예약 아이디 `ad
 python scripts/bootstrap_admin.py --email admin@example.com
 ```
 
-관리자 비밀번호는 터미널에서 두 번 숨김 입력하며 파일이나 환경변수에 저장하지 않습니다.
+관리자 비밀번호는 8~128자로 터미널에서 두 번 숨김 입력하며 파일이나 환경변수에 저장하지 않습니다.
 같은 명령을 다시 실행하면 기존 `admin` 계정의 이메일·비밀번호·관리자 역할을 갱신합니다.
 입력한 이메일이 정확히 하나의 기존 Auth 계정에 속하면 그 UUID와 기억 소유권을 유지한
 채 `admin`으로 승격하며, 이메일이 모호하거나 다른 관리자와 충돌하면 변경 없이 중단합니다.
@@ -136,6 +153,7 @@ SUPABASE_SERVICE_KEY=your-supabase-service-role-key
 CHAT_MODEL=gpt-4o-mini
 EMBED_MODEL=text-embedding-3-small
 SIM_THRESHOLD=0.25
+SIMILAR_MEMORY_THRESHOLD=0.82
 TOP_K=8
 CATALOG_CACHE_TTL=30
 MAX_CONTEXT_CHARS=12000
@@ -146,13 +164,18 @@ MAX_INGEST_CHARS=20000
 APP_ENV=development
 SESSION_TTL_SECONDS=43200
 COOKIE_SECURE=false
+SIGNUP_ENABLED=true
 ```
+
+`SIGNUP_ENABLED`를 생략하면 개발 환경에서는 회원가입이 열리고, Vercel·Railway·
+Render 또는 `APP_ENV=production`인 운영 환경에서는 닫힙니다. 운영 회원가입을
+의도적으로 열 때만 `SIGNUP_ENABLED=true`를 설정합니다.
 
 역할별 권한은 다음과 같습니다.
 
-- `viewer`: 기억 조회와 질문, 모두의 기억 제안 동의
-- `editor`: `viewer` 권한 + 개인기억 저장·수정·삭제, 모두의 기억 공개 제안
-- `admin`: 모두의 기억 즉시 공개·수정·삭제 + 만료 정리, 감사 로그·보안 구조 조회, 사용자 AI 사용권 충전
+- `viewer`: 기억 조회와 질문, 모두의 기억 공개·삭제 제안 동의
+- `editor`: `viewer` 권한 + 개인기억 저장·수정·즉시 삭제, 모두의 기억 공개·삭제 제안
+- `admin`: 모두의 기억 즉시 공개·수정·삭제 + 만료 정리, 승인, 감사 로그·보안 구조 조회, 사용자 AI 사용권 충전
 
 모든 질문은 공유 기억과 현재 로그인 UUID의 개인기억을 함께 검색합니다. 다른 계정의
 개인기억은 목록, 필터, 태그, 벡터 검색 및 답변 원문에 포함되지 않습니다.
@@ -248,6 +271,12 @@ OpenAI 요청이 실행되더라도 잔액은 한 번만 차감합니다. 로그
   로그인 사용자에게 공개됩니다. 승인 전에는 일반 목록·검색·AI 답변에 나타나지 않습니다.
 - `admin`: 모두의 기억을 승인 대기 없이 즉시 공개하고, 공개된 내용을 관리할 수 있습니다.
 
+공개된 모두의 기억은 `editor`가 삭제를 요청하면 요청자 동의를 포함해 1/2 상태가
+됩니다. 다른 계정 한 명이 동의해야 실제로 삭제되며, 같은 사용자가 반복해서 눌러도
+동의 수는 늘지 않습니다. `viewer`는 삭제 요청을 새로 만들 수 없지만 기존 요청에는
+동의할 수 있습니다. 개인기억은 소유자가 즉시 삭제하고, 관리자는 모두의 기억을
+즉시 삭제할 수 있습니다.
+
 저장 레코드에는 다음 메타데이터가 포함됩니다.
 
 ```json
@@ -281,15 +310,17 @@ OpenAI 요청이 실행되더라도 잔액은 한 번만 차감합니다. 로그
 - 유형 탭으로 업무와 계정·비밀번호, 자료·강의를 분리해서 조회
 - 최근 기록은 10건씩 표시하고 `더 보기`로 추가 조회
 - 태그를 눌러 관련 기록만 조회
-- `×` 버튼으로 개별 기록 삭제
+- 개인기억의 `×` 버튼으로 즉시 삭제하고, 모두의 기억의 `삭제 요청`으로 2인 승인 시작
 - 연필 버튼으로 본문과 구조화 메타데이터 수정
 - `모두의 기억 승인`에서 대기 중인 제안의 작성자·내용·동의 수를 확인하고 동의
+- `모두의 기억 삭제 승인`에서 삭제 요청의 내용·동의 수를 확인하고 두 번째 동의
 - `만료 정리`로 만료된 기록 일괄 삭제
 - 관리자 헤더의 `활동 로그`에서 로그인, 질문, 저장, 수정, 삭제 이력 조회
 
 ## 검색 설정
 
 - `SIM_THRESHOLD`: 벡터 검색 최소 유사도. 높이면 누락이 늘고 오답이 줄어듭니다.
+- `SIMILAR_MEMORY_THRESHOLD`: 저장 전 유사 기억 경고 기준입니다. 답변 검색 기준과 별도로 적용됩니다.
 - `TOP_K`: 답변 생성에 사용할 최대 검색 결과 수입니다.
 - `CATALOG_CACHE_TTL`: 키워드·태그 검색용 메모리 카탈로그 캐시 시간(초)입니다.
 - `MAX_CATALOG_ROWS`: 정확 검색용 활성 기억 카탈로그의 최대 행 수입니다.
@@ -313,8 +344,35 @@ fuser -k 8000/tcp
 
 로컬과 운영 환경 모두 Supabase Auth 로그인이 필요합니다. 사용자 데이터 요청은
 publishable key와 요청별 사용자 JWT로 실행해 RLS를 적용합니다. service key는 서버의
-아이디-이메일/UUID 매핑, 감사 로그, 모두의 기억 승인 대기 생성·조회와 명시적인
+아이디-이메일/UUID 매핑, 감사 로그, 모두의 기억 공개·삭제 승인 대기 생성·조회와 명시적인
 관리자 작업에만 사용합니다.
+
+### Vercel 서버리스
+
+루트 `main.py`의 FastAPI `app`을 Vercel이 하나의 Python Function으로 실행합니다.
+Python 3.12, 서울 리전, Fluid Compute와 최대 실행 시간은 `.python-version`과
+`vercel.json`에 정의되어 있습니다. `.vercelignore`는 `.env`, 가상환경, SQL과
+테스트 파일이 CLI 업로드에 포함되지 않게 합니다.
+
+```powershell
+npx vercel@59.0.0 login
+npx vercel@59.0.0 link
+npx vercel@59.0.0 env add OPENAI_API_KEY production,preview --sensitive
+npx vercel@59.0.0 env add SUPABASE_URL production,preview --sensitive
+npx vercel@59.0.0 env add SUPABASE_PUBLISHABLE_KEY production,preview --sensitive
+npx vercel@59.0.0 env add SUPABASE_SERVICE_KEY production,preview --sensitive
+npx vercel@59.0.0 deploy
+npx vercel@59.0.0 deploy --prod
+```
+
+사내 인증서 검사 환경에서 Node가 인증서를 거부하면 검증을 끄지 말고 현재
+PowerShell 세션에 `$env:NODE_OPTIONS='--use-system-ca'`를 먼저 설정합니다.
+운영에서는 회원가입이 기본 차단되고 기존 계정만 로그인할 수 있습니다. Vercel의
+Production URL은 인터넷에서 접근 가능하므로 앱 인증을 유지하고, Preview는
+Deployment Protection을 켠 뒤 공유합니다. 회사·팀의 지속 운영은 Vercel 요금제와
+사내 클라우드 보안 정책을 확인해야 합니다.
+
+### Docker 호스팅
 
 Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연결하고 다음 값을
 환경변수로 등록합니다.
@@ -324,6 +382,8 @@ Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연�
 - `SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SERVICE_KEY`
 - `APP_ENV=production`
+- `COOKIE_SECURE=true`
+- `SIGNUP_ENABLED=false`
 
 배포 후 `/healthz`가 `{"status":"ok"}`를 반환하는지 확인합니다.
 

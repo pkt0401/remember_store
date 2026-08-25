@@ -312,7 +312,8 @@ begin
     insert into public.shared_memory_proposal_approvals (
       proposal_id, approver_user_id
     ) values (target_proposal_id, approver_id)
-    on conflict (proposal_id, approver_user_id) do nothing;
+    on conflict on constraint shared_memory_proposal_approvals_pkey
+      do nothing;
     get diagnostics approval_inserted = row_count;
   end if;
 
