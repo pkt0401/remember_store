@@ -3199,6 +3199,273 @@ def test_prepare_answer_uses_resolved_followup_for_search_and_answer_prompt(
     assert "CL/AI" in final_prompt
 
 
+def test_lexical_search_normalizes_whitespace_for_exact_expense_query():
+    expense_memory = _memory(
+        "atl-ai-tool-expense",
+        content="""[카테고리] 비용 처리 가이드
+[제목] 2026년 8월 ATL AI 도구 사용료 처리
+[프로젝트 코드] 41000069-001
+[프로젝트명] 26년 AI Talent Lab 운영
+[비용 계정] CL/AI
+[내용]
+ATL AI 도구 사용료는 지정 프로젝트와 비용 계정으로 처리합니다.""",
+    )
+    distractor = _memory(
+        "ai-course",
+        content="AI Bootcamp에서 OpenAI 도구 에이전트 활용법을 학습합니다.",
+    )
+
+    hits = main.lexical_memory_hits(
+        "AI도구 비용처리 방법",
+        [distractor, expense_memory],
+    )
+
+    assert [hit["id"] for hit in hits] == ["atl-ai-tool-expense", "ai-course"]
+    assert [hit["_lexical_score"] for hit in hits] == [3, 2]
+
+
+def test_prepare_answer_exact_expense_query_keeps_best_hit_and_grounded_fields(
+    monkeypatch,
+):
+    expense_memory = _memory(
+        "atl-ai-tool-expense",
+        content="""[기록 유형] 업무
+[카테고리] 비용 처리 가이드
+[제목] 2026년 8월 ATL AI 도구 사용료 처리
+[적용월] 2026년 8월
+[확인자] 권민정 매니저
+[프로젝트 코드] 41000069-001
+[프로젝트명] 26년 AI Talent Lab 운영
+[비용 계정] CL/AI
+[내용]
+이번 달 ATL 관련 AI 도구 사용료는 위 프로젝트와 비용 계정으로 처리합니다.
+[키워드] ATL, AI 도구 사용료, 비용 처리, 41000069-001, CL/AI""",
+    )
+    distractor = _memory(
+        "ai-course",
+        content="""과정명: AI Bootcamp
+모듈명: Azure OpenAI & LangChain
+강의 목록: 도구 에이전트와 챗봇 실습""",
+    )
+    monkeypatch.setattr(
+        main,
+        "memory_catalog",
+        lambda _db, _user_id: [distractor, expense_memory],
+    )
+    monkeypatch.setattr(
+        main,
+        "embed",
+        lambda _texts: pytest.fail("normalized lexical retrieval should be sufficient"),
+    )
+
+    prepared = main.prepare_answer(
+        main.AskRequest(question="AI도구 비용처리 방법"),
+        object(),
+        _user(),
+    )
+
+    assert [source["id"] for source in prepared["sources"]] == [
+        "atl-ai-tool-expense"
+    ]
+    grounded = prepared["grounded_fallback"]
+    assert grounded is not None
+    assert "41000069-001" in grounded
+    assert "26년 AI Talent Lab 운영" in grounded
+    assert "CL/AI" in grounded
+    assert "2026년 8월" in grounded
+    assert "권민정 매니저" in grounded
+    assert "Azure OpenAI" not in prepared["messages"][-1]["content"]
+
+
+def test_prepare_answer_does_not_prefer_weaker_structured_expense_hit(
+    monkeypatch,
+):
+    strong_plain = _memory(
+        "strong-plain-expense",
+        content=(
+            "AI 도구 비용처리 방법은 사내 결제 가이드의 최신 절차를 따릅니다."
+        ),
+    )
+    weak_structured = _memory(
+        "weak-structured-expense",
+        content="""[제목] 다른 프로젝트 비용 안내
+[프로젝트 코드] WEAK-001
+[비용 계정] OTHER/AI
+[내용]
+AI 도구 참고 자료입니다.""",
+    )
+    monkeypatch.setattr(
+        main,
+        "memory_catalog",
+        lambda _db, _user_id: [weak_structured, strong_plain],
+    )
+    monkeypatch.setattr(
+        main,
+        "embed",
+        lambda _texts: pytest.fail("strong lexical retrieval should be sufficient"),
+    )
+
+    prepared = main.prepare_answer(
+        main.AskRequest(question="AI도구 비용처리 방법"),
+        object(),
+        _user(),
+    )
+
+    assert prepared["sources"][0]["id"] == "strong-plain-expense"
+    assert prepared["grounded_fallback"] is None
+    assert "최신 절차" in prepared["messages"][-1]["content"]
+
+
+def test_prepare_answer_without_related_memory_preserves_no_result_fallback(
+    monkeypatch,
+):
+    class EmptyRpc:
+        def execute(self):
+            return _result([])
+
+    class EmptySearchClient:
+        def rpc(self, name, params):
+            assert name == "match_memories"
+            assert params["query_scope"] == "personal"
+            return EmptyRpc()
+
+    monkeypatch.setattr(main, "memory_catalog", lambda _db, _user_id: [])
+    monkeypatch.setattr(main, "embed", lambda _texts: [[0.1]])
+
+    prepared = main.prepare_answer(
+        main.AskRequest(question="AI도구 비용처리 방법"),
+        EmptySearchClient(),
+        _user(),
+    )
+
+    assert prepared["fallback"] == (
+        "저장된 정보에서 관련 내용을 찾지 못했어요. "
+        "먼저 관련 메시지를 붙여넣어 저장해 주세요."
+    )
+    assert prepared["messages"] is None
+    assert prepared["sources"] == []
+    assert prepared["grounded_fallback"] is None
+
+
+def test_grounded_answer_requires_relevant_intent_and_prefers_edited_metadata():
+    memory = _memory(
+        "atl-ai-tool-expense",
+        content="""[제목] 이전 AI 도구 비용 처리
+[프로젝트 코드] OLD-001
+[프로젝트명] 이전 프로젝트
+[비용 계정] OLD/AI
+[적용월] 2026년 8월
+[확인자] 이전 확인자
+[내용]
+AI 도구 사용료는 지정된 프로젝트와 비용 계정으로 처리합니다.""",
+    )
+    memory["_lexical_score"] = 3
+    memory["metadata"].update({
+        "subject": "수정된 AI 도구 비용 처리",
+        "project_code": "NEW-001",
+        "project": "수정된 프로젝트",
+        "expense_account": "NEW/AI",
+        "applicable_month": "2026년 9월",
+        "confirmed_by": "새 확인자",
+    })
+
+    assert main.structured_grounded_answer(
+        "권민정 매니저 연락처 알려줘",
+        [memory],
+    ) is None
+
+    grounded = main.structured_grounded_answer("AI도구 비용처리 방법", [memory])
+
+    assert grounded is not None
+    assert "수정된 AI 도구 비용 처리" in grounded
+    assert "NEW-001 / 수정된 프로젝트" in grounded
+    assert "NEW/AI" in grounded
+    assert "2026년 9월" in grounded
+    assert "새 확인자" in grounded
+    assert "이전 프로젝트" not in grounded
+    assert "이전 확인자" not in grounded
+
+
+def test_no_information_detector_rejects_partial_grounded_answers():
+    assert main.is_no_information_answer("저장된 정보에서 찾지 못했다.")
+    assert main.is_no_information_answer(
+        "저장된 정보에서 관련 내용을 찾지 못했어요. 먼저 저장해 주세요."
+    )
+    assert not main.is_no_information_answer(
+        "저장된 정보에서 프로젝트 코드는 41000069-001이지만 "
+        "확인자는 찾지 못했습니다."
+    )
+
+
+def test_nonstream_replaces_short_no_information_answer_with_grounded_answer(
+    monkeypatch,
+):
+    grounded = (
+        "**2026년 8월 ATL AI 도구 사용료 처리**\n"
+        "- 프로젝트: 41000069-001 / 26년 AI Talent Lab 운영\n"
+        "- 비용 계정: CL/AI\n"
+        "- 적용월: 2026년 8월\n"
+        "- 확인자: 권민정 매니저"
+    )
+    prepared = {
+        "fallback": None,
+        "grounded_fallback": grounded,
+        "messages": [{"role": "user", "content": "grounded question"}],
+        "resolved_question": None,
+        "sources": [{"id": "atl-ai-tool-expense"}],
+    }
+    events = []
+    monkeypatch.setattr(
+        main,
+        "consume_ai_use",
+        lambda user_id: events.append(("consume", user_id)) or 9,
+    )
+    monkeypatch.setattr(
+        main,
+        "prepare_answer",
+        lambda *_args: events.append(("prepare", None)) or prepared,
+    )
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *args, **kwargs: events.append(
+            ("audit", args[2], kwargs["source_count"], kwargs["streaming"])
+        ),
+    )
+
+    class FalseNegativeCompletions:
+        def create(self, **kwargs):
+            assert kwargs.get("stream") is not True
+            events.append(("model", False))
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="저장된 정보에서 찾지 못했다.")
+            )])
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(
+            chat=SimpleNamespace(completions=FalseNegativeCompletions())
+        ),
+    )
+
+    result = main.ask(
+        main.AskRequest(question="AI도구 비용처리 방법"),
+        _request("POST", "/api/ask", user=_user(), db=object()),
+    )
+
+    assert result["answer"] == grounded
+    assert "찾지 못했다" not in result["answer"]
+    assert result["sources"] == [{"id": "atl-ai-tool-expense"}]
+    assert result["remaining_uses"] == 9
+    assert events == [
+        ("consume", ALICE_ID),
+        ("prepare", None),
+        ("model", False),
+        ("audit", "memory_ask", 1, False),
+    ]
+
+
 def test_prepare_answer_searches_shared_plus_requesting_users_personal_memories(monkeypatch):
     all_rows = [
         {
@@ -3355,6 +3622,244 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
     assert events[0]["sources"] == [{"id": "memory-1"}]
     assert events[0]["remaining_uses"] == 9
     assert "".join(event.get("content", "") for event in events) == "첫 번째 답변"
+
+
+def test_stream_replaces_chunked_no_information_answer_with_grounded_answer(
+    monkeypatch,
+):
+    grounded = (
+        "**2026년 8월 ATL AI 도구 사용료 처리**\n"
+        "- 프로젝트: 41000069-001 / 26년 AI Talent Lab 운영\n"
+        "- 비용 계정: CL/AI\n"
+        "- 적용월: 2026년 8월\n"
+        "- 확인자: 권민정 매니저"
+    )
+    prepared = {
+        "fallback": None,
+        "grounded_fallback": grounded,
+        "messages": [{"role": "user", "content": "grounded question"}],
+        "resolved_question": None,
+        "sources": [{"id": "atl-ai-tool-expense"}],
+    }
+    request_db = object()
+    call_order = []
+    monkeypatch.setattr(
+        main,
+        "consume_ai_use",
+        lambda user_id: call_order.append(("consume", user_id)) or 9,
+    )
+    monkeypatch.setattr(
+        main,
+        "prepare_answer",
+        lambda *_args: call_order.append(("prepare", None)) or prepared,
+    )
+    monkeypatch.setattr(
+        main,
+        "write_audit",
+        lambda *args, **kwargs: call_order.append(
+            ("audit", args[2], kwargs["source_count"], kwargs["streaming"])
+        ),
+    )
+
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="저장된 정보에서 ")
+        )]),
+        SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="찾지 못했다.")
+        )]),
+    ]
+
+    class FalseNegativeStreamCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            call_order.append(("model", True))
+            return iter(chunks)
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(
+            chat=SimpleNamespace(completions=FalseNegativeStreamCompletions())
+        ),
+    )
+
+    response = main.ask_stream(
+        main.AskRequest(question="AI도구 비용처리 방법"),
+        _request(
+            "POST",
+            "/api/ask/stream",
+            user=_user(),
+            db=request_db,
+        ),
+    )
+
+    async def collect():
+        return [part async for part in response.body_iterator]
+
+    events = [
+        json.loads(line)
+        for part in asyncio.run(collect())
+        for line in (part.decode() if isinstance(part, bytes) else part).splitlines()
+        if line
+    ]
+
+    assert [event["type"] for event in events] == [
+        "meta", "progress", "progress", "delta", "done",
+    ]
+    rendered = "".join(
+        event.get("content", "") for event in events if event["type"] == "delta"
+    )
+    assert rendered == grounded
+    assert "찾지 못했다" not in rendered
+    assert call_order == [
+        ("consume", ALICE_ID),
+        ("prepare", None),
+        ("audit", "memory_ask", 1, True),
+        ("model", True),
+    ]
+
+
+def test_buffered_stream_cancellation_closes_upstream_and_refunds_once(monkeypatch):
+    prepared = {
+        "fallback": None,
+        "grounded_fallback": "근거가 있는 비용 처리 답변",
+        "messages": [{"role": "user", "content": "grounded question"}],
+        "resolved_question": None,
+        "sources": [{"id": "atl-ai-tool-expense"}],
+    }
+    refunds = []
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "prepare_answer", lambda *_args: prepared)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "refund_ai_use_after_failure",
+        lambda user_id, remaining: refunds.append((user_id, remaining)) or 10,
+    )
+
+    class TrackingStream:
+        def __init__(self):
+            self.sent = False
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.sent:
+                raise AssertionError("disconnect should stop upstream iteration")
+            self.sent = True
+            return SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content="저장된 정보에서 ")
+            )])
+
+        def close(self):
+            self.closed = True
+
+    upstream = TrackingStream()
+
+    class BufferedCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            return upstream
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=BufferedCompletions())),
+    )
+    response = main.ask_stream(
+        main.AskRequest(question="AI도구 비용처리 방법"),
+        _request("POST", "/api/ask/stream", user=_user(), db=object()),
+    )
+
+    async def read_progress_then_disconnect():
+        iterator = response.body_iterator
+        parts = [await anext(iterator), await anext(iterator)]
+        await iterator.aclose()
+        return parts
+
+    events = [
+        json.loads(part.decode() if isinstance(part, bytes) else part)
+        for part in asyncio.run(read_progress_then_disconnect())
+    ]
+
+    assert [event["type"] for event in events] == ["meta", "progress"]
+    assert all(event["type"] != "delta" for event in events)
+    assert upstream.closed is True
+    assert refunds == [(ALICE_ID, 9)]
+
+
+def test_buffered_stream_error_emits_no_partial_answer_and_refunds_once(monkeypatch):
+    prepared = {
+        "fallback": None,
+        "grounded_fallback": "근거가 있는 비용 처리 답변",
+        "messages": [{"role": "user", "content": "grounded question"}],
+        "resolved_question": None,
+        "sources": [{"id": "atl-ai-tool-expense"}],
+    }
+    refunds = []
+    monkeypatch.setattr(main, "consume_ai_use", lambda _user_id: 9)
+    monkeypatch.setattr(main, "prepare_answer", lambda *_args: prepared)
+    monkeypatch.setattr(main, "write_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "refund_ai_use_after_failure",
+        lambda user_id, remaining: refunds.append((user_id, remaining)) or 10,
+    )
+
+    class FailingStream:
+        def __init__(self):
+            self.calls = 0
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content="저장된 정보에서 ")
+                )])
+            raise RuntimeError("stream failed after a buffered chunk")
+
+        def close(self):
+            self.closed = True
+
+    upstream = FailingStream()
+
+    class BufferedCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+            return upstream
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(chat=SimpleNamespace(completions=BufferedCompletions())),
+    )
+    response = main.ask_stream(
+        main.AskRequest(question="AI도구 비용처리 방법"),
+        _request("POST", "/api/ask/stream", user=_user(), db=object()),
+    )
+
+    async def collect():
+        return [part async for part in response.body_iterator]
+
+    events = [
+        json.loads(line)
+        for part in asyncio.run(collect())
+        for line in (part.decode() if isinstance(part, bytes) else part).splitlines()
+        if line
+    ]
+
+    assert [event["type"] for event in events] == ["meta", "progress", "error"]
+    assert all(event["type"] != "delta" for event in events)
+    assert events[-1]["remaining_uses"] == 10
+    assert upstream.closed is True
+    assert refunds == [(ALICE_ID, 9)]
 
 
 class _RpcResult:
