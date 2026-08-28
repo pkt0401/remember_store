@@ -115,6 +115,88 @@
     z-index: 2;
   }
 
+  /* ------ Music toggle (音) — bottom-right, always visible ------ */
+  #ytPlayerBox {
+    position: fixed;
+    left: -9999px; top: -9999px;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    opacity: 0.01;
+    pointer-events: none;
+  }
+  .music-toggle {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--panel);
+    color: var(--matcha);
+    border: 1px solid var(--line);
+    font-family: var(--serif-jp);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0;
+    cursor: pointer;
+    z-index: 250;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 6px 18px -8px rgba(27, 38, 32, 0.35);
+    transition: background 220ms ease, color 220ms ease, transform 220ms ease, box-shadow 220ms ease;
+  }
+  .music-toggle:hover:not(:disabled) {
+    background: var(--matcha-wash);
+    transform: translateY(-1px);
+  }
+  .music-toggle:disabled { opacity: 0.45; cursor: wait; }
+  .music-toggle:focus-visible {
+    outline: 2px solid var(--sakura-deep);
+    outline-offset: 3px;
+  }
+  .music-toggle .music-icon { line-height: 1; }
+  .music-toggle .music-wave {
+    display: none;
+    position: absolute;
+    right: -4px; bottom: -4px;
+    width: 20px; height: 20px;
+    background: var(--panel);
+    border: 1px solid var(--matcha);
+    border-radius: 50%;
+    align-items: end;
+    justify-content: center;
+    gap: 2px;
+    padding: 3px 0;
+  }
+  .music-toggle .music-wave i {
+    display: block;
+    width: 2px;
+    height: 6px;
+    background: var(--matcha);
+    border-radius: 1px;
+    animation: musicwave 900ms ease-in-out infinite;
+  }
+  .music-toggle .music-wave i:nth-child(2) { animation-delay: 150ms; }
+  .music-toggle .music-wave i:nth-child(3) { animation-delay: 300ms; }
+  @keyframes musicwave {
+    0%, 100% { transform: scaleY(0.4); }
+    50%      { transform: scaleY(1.4); }
+  }
+  .music-toggle.playing {
+    background: var(--matcha);
+    color: var(--washi);
+    border-color: var(--matcha);
+  }
+  .music-toggle.playing .music-wave { display: inline-flex; }
+  .music-toggle.playing:hover { background: var(--matcha-deep); }
+  @media (prefers-reduced-motion: reduce) {
+    .music-toggle .music-wave i { animation: none; }
+  }
+  @media (max-width: 640px) {
+    .music-toggle { right: 16px; bottom: 16px; width: 44px; height: 44px; font-size: 17px; }
+  }
+
   /* ------ Motion glow (JS toggled) — soft ambient warm circle ------ */
   .motion-pointer-glow {
     position: fixed;
@@ -1696,6 +1778,12 @@
 <body>
 
 <canvas id="sakuraCanvas" aria-hidden="true"></canvas>
+
+<button id="musicToggle" class="music-toggle" type="button" aria-label="배경 음악 재생" title="배경 음악 재생" disabled>
+  <span class="music-icon" aria-hidden="true">音</span>
+  <span class="music-wave" aria-hidden="true"><i></i><i></i><i></i></span>
+</button>
+<div id="ytPlayerBox" aria-hidden="true"><div id="ytPlayer"></div></div>
 
 
 <div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
@@ -3990,6 +4078,95 @@ init();
     running = !document.hidden;
     if (running) requestAnimationFrame(step);
   });
+})();
+</script>
+
+<script>
+/* 音 · Ambient BGM via YouTube IFrame API — user-controlled play/pause */
+(function(){
+  var VIDEO_ID = "JQKY9yv6Bug";
+  var btn = document.getElementById("musicToggle");
+  var player = null;
+  var ready = false;
+  var wantPlay = false;
+  if (!btn) return;
+
+  function setPlayingState(isPlaying) {
+    btn.classList.toggle("playing", isPlaying);
+    btn.setAttribute("aria-label", isPlaying ? "배경 음악 정지" : "배경 음악 재생");
+    btn.setAttribute("title", isPlaying ? "배경 음악 정지" : "배경 음악 재생");
+  }
+
+  function loadApi(cb){
+    if (window.YT && window.YT.Player) { cb(); return; }
+    if (document.getElementById("ytApiScript")) {
+      var check = setInterval(function(){
+        if (window.YT && window.YT.Player) { clearInterval(check); cb(); }
+      }, 120);
+      return;
+    }
+    var tag = document.createElement("script");
+    tag.id = "ytApiScript";
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
+    var prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = function(){
+      if (typeof prev === "function") try { prev(); } catch(_){}
+      cb();
+    };
+  }
+
+  function createPlayer(){
+    player = new YT.Player("ytPlayer", {
+      height: "1",
+      width: "1",
+      videoId: VIDEO_ID,
+      playerVars: {
+        autoplay: 0,
+        controls: 0,
+        modestbranding: 1,
+        rel: 0,
+        loop: 1,
+        playlist: VIDEO_ID,
+        playsinline: 1,
+        iv_load_policy: 3,
+        disablekb: 1
+      },
+      events: {
+        onReady: function(){
+          ready = true;
+          btn.disabled = false;
+          if (wantPlay) { player.playVideo(); }
+        },
+        onStateChange: function(e){
+          if (e.data === YT.PlayerState.PLAYING) setPlayingState(true);
+          else if (e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.ENDED) setPlayingState(false);
+        },
+        onError: function(){
+          setPlayingState(false);
+          btn.disabled = true;
+          btn.title = "음원을 불러올 수 없어요";
+        }
+      }
+    });
+  }
+
+  btn.addEventListener("click", function(){
+    if (!ready) {
+      wantPlay = true;
+      btn.disabled = true;
+      loadApi(createPlayer);
+      return;
+    }
+    if (btn.classList.contains("playing")) {
+      player.pauseVideo();
+    } else {
+      player.playVideo();
+    }
+  });
+
+  // Enable button once DOM is ready (API loads on first click)
+  btn.disabled = false;
 })();
 </script>
 
