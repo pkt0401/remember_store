@@ -1,4 +1,4 @@
-# 기억 서랍 (Memory Agent)
+# 궁궁타파 (Memory Agent)
 
 Slack 메시지, 이메일, 메모를 붙여넣으면 OpenAI로 내용을 구조화하고 임베딩한 뒤
 Supabase `pgvector`에 저장하는 개인용 기억 관리 웹앱입니다. 저장된 내용만 근거로

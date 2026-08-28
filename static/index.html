@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>기억 서랍</title>
+<title>궁궁타파</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <style>
   :root {
@@ -533,29 +533,33 @@
   /* ---- aurora glass theme ---- */
   :root {
     color-scheme: dark;
-    --bg: #3940C9;
-    --panel: rgba(43, 50, 157, .58);
-    --ink: #FFFFFF;
-    --ink-soft: rgba(245, 248, 255, .78);
-    --ink-faint: rgba(245, 248, 255, .58);
-    --line: rgba(255, 255, 255, .25);
-    --pine: #8EEBFF;
-    --pine-soft: rgba(109, 224, 255, .16);
+    --bg: #070916;
+    --panel: #10152A;
+    --ink: #F6F7FF;
+    --ink-soft: rgba(202, 210, 236, .76);
+    --ink-faint: rgba(154, 164, 199, .62);
+    --line: rgba(157, 170, 220, .16);
+    --pine: #79C8FF;
+    --pine-soft: rgba(76, 151, 225, .14);
     --amber: #FFE2A0;
     --amber-soft: rgba(255, 216, 135, .16);
     --slate: #D9E8FF;
     --slate-soft: rgba(198, 218, 255, .16);
     --danger: #FFD2D8;
     --danger-soft: rgba(138, 34, 62, .28);
-    --glass: rgba(46, 52, 157, .52);
-    --glass-strong: rgba(27, 35, 125, .68);
-    --glass-soft: rgba(255, 255, 255, .075);
-    --glass-hover: rgba(255, 255, 255, .14);
-    --glass-border: rgba(255, 255, 255, .42);
-    --glass-line: rgba(255, 255, 255, .22);
+    --glass: rgba(16, 21, 42, .92);
+    --glass-strong: rgba(8, 12, 28, .96);
+    --glass-soft: rgba(151, 164, 211, .055);
+    --glass-hover: rgba(151, 176, 230, .10);
+    --glass-border: rgba(157, 170, 220, .17);
+    --glass-line: rgba(157, 170, 220, .14);
+    --capture: #8B5CF6;
+    --capture-hi: #B39AFB;
+    --query: #2563EB;
+    --query-hi: #6EB7FF;
     --radius-panel: 22px;
     --radius-control: 12px;
-    --shadow-glass: 0 26px 72px rgba(14, 22, 105, .24), inset 0 1px 0 rgba(255, 255, 255, .14);
+    --shadow-glass: 0 26px 72px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .04);
     --mono: "SF Mono", Consolas, "D2Coding", ui-monospace, monospace;
   }
 
@@ -564,10 +568,10 @@
     isolation: isolate;
     overflow-x: hidden;
     background:
-      radial-gradient(70rem 34rem at -5% 105%, rgba(222, 143, 190, .74), transparent 57%),
-      radial-gradient(52rem 36rem at 103% 48%, rgba(63, 220, 250, .78), transparent 62%),
-      radial-gradient(40rem 26rem at 43% 50%, rgba(117, 102, 219, .34), transparent 68%),
-      linear-gradient(118deg, #5579E5 0%, #3C3BCB 42%, #304FE0 69%, #2BBBE8 100%);
+      radial-gradient(64rem 38rem at -8% 108%, rgba(104, 61, 181, .22), transparent 60%),
+      radial-gradient(50rem 34rem at 104% 44%, rgba(32, 94, 153, .16), transparent 64%),
+      radial-gradient(38rem 24rem at 46% 42%, rgba(70, 57, 145, .12), transparent 70%),
+      linear-gradient(145deg, #060815 0%, #090C1A 52%, #0D1228 100%);
     background-attachment: fixed;
   }
   body::before {
@@ -576,8 +580,8 @@
     inset: -32px;
     z-index: 0;
     pointer-events: none;
-    opacity: .68;
-    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, .075) 0 1px, transparent 1px 8px);
+    opacity: .2;
+    background: repeating-linear-gradient(135deg, rgba(164, 177, 226, .07) 0 1px, transparent 1px 9px);
     -webkit-mask-image: linear-gradient(90deg, #000 0 31%, transparent 46% 66%, #000 82% 100%);
     mask-image: linear-gradient(90deg, #000 0 31%, transparent 46% 66%, #000 82% 100%);
     will-change: transform;
@@ -592,8 +596,8 @@
     z-index: 0;
     pointer-events: none;
     border-radius: 50%;
-    background: rgba(189, 245, 255, .18);
-    filter: blur(42px);
+    background: rgba(98, 118, 214, .10);
+    filter: blur(54px);
     will-change: transform;
   }
   body > header, body > main { position: relative; z-index: 1; }
@@ -608,7 +612,7 @@
     border-radius: 50%;
     contain: strict;
     opacity: 0;
-    background: radial-gradient(circle, rgba(171, 246, 255, .22) 0, rgba(108, 179, 255, .1) 36%, transparent 70%);
+    background: radial-gradient(circle, rgba(111, 169, 255, .11) 0, rgba(102, 79, 205, .055) 38%, transparent 70%);
     transform: translate3d(-999px, -999px, 0);
     transition: opacity .24s ease;
     will-change: transform, opacity;
@@ -636,22 +640,22 @@
     width: 30px;
     height: 30px;
     flex: 0 0 auto;
-    border: 1px solid rgba(255, 255, 255, .58);
+    border: 1px solid rgba(150, 168, 237, .32);
     border-radius: 10px;
     background:
-      linear-gradient(135deg, rgba(255, 255, 255, .32), rgba(255, 255, 255, .04)),
-      rgba(68, 75, 199, .42);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), 0 8px 22px rgba(18, 26, 115, .18);
+      linear-gradient(135deg, rgba(139, 92, 246, .34), rgba(37, 99, 235, .08)),
+      rgba(12, 17, 41, .9);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 8px 22px rgba(0, 0, 0, .22);
   }
   header p { color: var(--ink-soft); }
   .session-info { color: var(--ink-soft); }
   .session-info::before {
     content: "\25CF  active";
     padding: 5px 10px;
-    border: 1px solid rgba(255, 255, 255, .7);
+    border: 1px solid rgba(110, 183, 255, .28);
     border-radius: 999px;
-    background: rgba(255, 255, 255, .94);
-    color: #3440BF;
+    background: rgba(49, 93, 154, .14);
+    color: #BFE5FF;
     font: 700 9px/1 var(--mono);
     letter-spacing: .05em;
   }
@@ -677,13 +681,13 @@
   .edit-dialog,
   .audit-dialog {
     color: var(--ink);
-    background: #3545B2;
-    background: linear-gradient(145deg, rgba(76, 72, 188, .58), rgba(29, 84, 183, .46));
+    background: #10152A;
+    background: linear-gradient(155deg, rgba(18, 23, 47, .96), rgba(9, 13, 29, .94));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-panel);
     box-shadow: var(--shadow-glass);
-    -webkit-backdrop-filter: blur(20px) saturate(135%);
-    backdrop-filter: blur(20px) saturate(135%);
+    -webkit-backdrop-filter: blur(18px) saturate(112%);
+    backdrop-filter: blur(18px) saturate(112%);
   }
   .panel { position: relative; }
   .panel::before {
@@ -712,7 +716,7 @@
     min-height: 54px;
     padding: 15px 18px;
     border-color: var(--glass-line);
-    background: linear-gradient(90deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .025));
+    background: linear-gradient(90deg, rgba(133, 148, 204, .055), rgba(133, 148, 204, .015));
   }
   .panel-head b {
     display: inline-flex;
@@ -750,7 +754,7 @@
   .scope-picker input { accent-color: #91EDFF; }
   .ingest-foot, .ask-bar, .more-wrap, .similar-memory-intro,
   .approval-feedback { border-color: var(--glass-line); }
-  .ingest-foot, .ask-bar { background: rgba(21, 31, 123, .09); }
+  .ingest-foot, .ask-bar { background: rgba(5, 9, 23, .42); }
 
   textarea,
   .login-card input,
@@ -761,11 +765,11 @@
   .edit-field select,
   .edit-field textarea {
     color: var(--ink);
-    background: rgba(16, 27, 107, .24);
+    background: rgba(5, 9, 23, .62);
     border-color: var(--glass-line);
     caret-color: #FFFFFF;
   }
-  textarea { background: rgba(16, 27, 107, .10); }
+  textarea { background: rgba(5, 9, 23, .32); }
   input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   select option { color: #FFFFFF; background: #29349B; }
   .login-card input:focus,
@@ -821,19 +825,19 @@
   .login-card .auth-submit,
   .similar-memory-actions .confirm,
   .edit-actions .confirm {
-    color: #3340BD;
-    background: rgba(255, 255, 255, .95);
-    border: 1px solid rgba(255, 255, 255, .76);
+    color: #F7F8FF;
+    background: linear-gradient(135deg, #4F63D8, #315EA8);
+    border: 1px solid rgba(144, 176, 255, .34);
     border-radius: var(--radius-control);
-    box-shadow: 0 9px 25px rgba(20, 28, 119, .2);
+    box-shadow: 0 9px 25px rgba(0, 0, 0, .24);
   }
   button.save:hover,
   .ask-bar button:hover,
   .login-card .auth-submit:hover,
   .similar-memory-actions .confirm:hover,
   .edit-actions .confirm:hover {
-    background: #FFFFFF;
-    box-shadow: 0 12px 28px rgba(20, 28, 119, .26);
+    background: linear-gradient(135deg, #6175E8, #3970BF);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, .3);
     transform: translateY(-1px);
   }
   button.save:focus-visible, .ask-bar button:focus-visible {
@@ -865,7 +869,7 @@
   .section-tabs button:hover { background: rgba(255, 255, 255, .07); color: #FFFFFF; }
   .section-tabs button.on {
     color: #FFFFFF;
-    background: rgba(255, 255, 255, .16);
+    background: rgba(92, 117, 190, .16);
     box-shadow: inset 0 -2px 0 rgba(143, 237, 255, .85);
   }
   .tag.on {
@@ -924,7 +928,7 @@
     letter-spacing: 1px;
   }
   .login-card::after {
-    content: "MEMORY AGENT";
+    content: "GUNGUNG TAPA";
     position: absolute;
     top: 18px;
     right: 24px;
@@ -975,22 +979,222 @@
   .account-balance { color: #DFFBFF; }
 
   #log {
-    background: linear-gradient(180deg, rgba(20, 29, 118, .08), rgba(255, 255, 255, .025));
+    background: linear-gradient(180deg, rgba(7, 13, 31, .76), rgba(9, 13, 28, .92));
   }
   .msg.user {
-    color: #2F3BB4;
-    background: rgba(255, 255, 255, .95);
-    box-shadow: 0 10px 26px rgba(17, 25, 112, .18);
+    color: #F8FAFF;
+    background: linear-gradient(135deg, rgba(44, 92, 190, .92), rgba(70, 65, 168, .92));
+    border: 1px solid rgba(129, 166, 244, .22);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .22);
   }
   .msg.bot, .raw {
     color: var(--ink);
-    background: rgba(15, 25, 103, .25);
+    background: rgba(15, 22, 45, .92);
     border-color: var(--glass-line);
   }
   .answer h3, .answer strong, .raw, .access-row a:hover { color: var(--ink); }
   .msg.bot .srcs { border-color: var(--glass-line); }
   .raw b { color: var(--ink-soft); }
   .answer.streaming::after { background: #B8F4FF; }
+
+  /* ---- distinct capture + dialogue workspaces ---- */
+  .panel-title-group {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+  .panel-title-group .panel-kicker {
+    font: 700 9px/1 var(--mono);
+    letter-spacing: .13em;
+    text-transform: uppercase;
+  }
+
+  #ingestPanel {
+    background: linear-gradient(160deg, rgba(25, 20, 51, .98), rgba(10, 14, 31, .97));
+    border-color: rgba(167, 139, 250, .29);
+    box-shadow: inset 3px 0 0 rgba(139, 92, 246, .7), 0 24px 62px rgba(0, 0, 0, .32);
+  }
+  #ingestPanel::after {
+    background:
+      radial-gradient(26rem 15rem at 100% 0, rgba(139, 92, 246, .12), transparent 68%),
+      linear-gradient(125deg, rgba(255, 255, 255, .035), transparent 34%);
+  }
+  #ingestPanel .panel-head {
+    align-items: center;
+    background: linear-gradient(90deg, rgba(139, 92, 246, .12), rgba(139, 92, 246, .025));
+  }
+  #ingestPanel .panel-head b::before {
+    border-color: rgba(196, 177, 255, .78);
+    border-radius: 2px;
+    background: rgba(139, 92, 246, .86);
+    box-shadow: 0 0 0 4px rgba(139, 92, 246, .09), 0 0 16px rgba(139, 92, 246, .44);
+  }
+  #ingestPanel .panel-kicker { color: var(--capture-hi); }
+  .capture-input-shell {
+    margin: 14px 14px 0;
+    overflow: hidden;
+    border: 1px solid rgba(167, 139, 250, .2);
+    border-radius: 16px;
+    background: rgba(5, 8, 20, .72);
+    box-shadow: inset 0 1px 16px rgba(0, 0, 0, .28);
+  }
+  .capture-input-shell:focus-within {
+    border-color: rgba(179, 154, 251, .72);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, .13), inset 0 1px 16px rgba(0, 0, 0, .28);
+  }
+  .capture-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 13px;
+    border-bottom: 1px solid rgba(167, 139, 250, .13);
+    color: var(--ink-faint);
+    background: rgba(139, 92, 246, .055);
+    font: 700 9px/1.2 var(--mono);
+    letter-spacing: .08em;
+  }
+  .capture-toolbar .capture-mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #D6CAFF;
+  }
+  .capture-toolbar .capture-mode::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--capture-hi);
+    box-shadow: 0 0 10px rgba(167, 139, 250, .56);
+  }
+  #ingestPanel #pasteBox {
+    display: block;
+    min-height: 252px;
+    padding: 18px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  #ingestPanel #pasteBox:focus-visible { outline: 0; box-shadow: none; }
+  #ingestPanel #saveResult { padding-inline: 14px; }
+  #ingestPanel .scope-row {
+    margin: 12px 14px 0;
+    padding: 12px 13px;
+    border: 1px solid rgba(167, 139, 250, .15);
+    border-radius: 14px;
+    background: rgba(7, 10, 24, .58);
+  }
+  #ingestPanel .scope-picker input { accent-color: var(--capture); }
+  #ingestPanel .ingest-foot {
+    margin: 12px 14px 14px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  #ingestPanel button.save {
+    color: #FFFFFF;
+    background: linear-gradient(135deg, #7C3AED, #5445C5);
+    border-color: rgba(196, 177, 255, .36);
+    box-shadow: 0 9px 24px rgba(49, 25, 112, .34);
+  }
+  #ingestPanel button.save:hover {
+    background: linear-gradient(135deg, #8A4DF1, #6355D6);
+    box-shadow: 0 12px 28px rgba(49, 25, 112, .4);
+  }
+
+  #chat {
+    background: linear-gradient(160deg, rgba(8, 18, 38, .98), rgba(8, 11, 27, .98));
+    border-color: rgba(96, 165, 250, .24);
+    box-shadow: inset 3px 0 0 rgba(37, 99, 235, .58), 0 24px 62px rgba(0, 0, 0, .32);
+  }
+  #chat::after {
+    background:
+      radial-gradient(36rem 18rem at 100% 0, rgba(37, 99, 235, .12), transparent 70%),
+      linear-gradient(125deg, rgba(255, 255, 255, .025), transparent 34%);
+  }
+  #chat .panel-head {
+    background: linear-gradient(90deg, rgba(37, 99, 235, .11), rgba(37, 99, 235, .02));
+  }
+  #chat .panel-head b::before {
+    border-color: rgba(147, 197, 253, .72);
+    background: rgba(37, 99, 235, .88);
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, .09), 0 0 16px rgba(96, 165, 250, .45);
+  }
+  #chat .panel-kicker { color: var(--query-hi); }
+  #chat #log {
+    padding: 22px;
+    background:
+      radial-gradient(30rem 16rem at 50% 100%, rgba(37, 99, 235, .055), transparent 70%),
+      linear-gradient(180deg, rgba(5, 10, 25, .76), rgba(7, 10, 23, .95));
+  }
+  #chat .ask-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    margin: 0 14px 14px;
+    padding: 11px;
+    border: 1px solid rgba(96, 165, 250, .24);
+    border-radius: 18px;
+    background: rgba(4, 8, 19, .92);
+    box-shadow: 0 15px 36px rgba(0, 0, 0, .3), inset 0 1px 0 rgba(255, 255, 255, .025);
+  }
+  #chat .ask-bar:focus-within {
+    border-color: rgba(110, 183, 255, .7);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .14), 0 15px 36px rgba(0, 0, 0, .3);
+  }
+  .composer-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 3px;
+  }
+  .composer-meta label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #C9E7FF;
+    font-size: 11.5px;
+    font-weight: 680;
+  }
+  .composer-meta label::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--query-hi);
+    box-shadow: 0 0 10px rgba(96, 165, 250, .5);
+  }
+  .composer-meta span {
+    color: var(--ink-faint);
+    font: 650 9px/1 var(--mono);
+    letter-spacing: .04em;
+  }
+  .composer-row { display: flex; gap: 8px; min-width: 0; }
+  #chat .ask-bar input {
+    min-width: 0;
+    min-height: 48px;
+    padding: 12px 14px;
+    color: var(--ink);
+    background: rgba(14, 22, 43, .82);
+    border: 1px solid rgba(117, 151, 211, .15);
+    border-radius: 13px;
+  }
+  #chat .ask-bar input:focus { border-color: rgba(96, 165, 250, .4); box-shadow: none; }
+  #chat .ask-bar button {
+    min-width: 82px;
+    min-height: 48px;
+    color: #FFFFFF;
+    background: linear-gradient(135deg, #2563EB, #3150B8);
+    border-color: rgba(147, 197, 253, .3);
+    box-shadow: 0 9px 22px rgba(12, 45, 108, .34);
+  }
+  #chat .ask-bar button:hover {
+    background: linear-gradient(135deg, #3474F3, #3A5AC7);
+    box-shadow: 0 12px 26px rgba(12, 45, 108, .4);
+  }
 
   button, a, input, textarea, select { transition: border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease; }
   button:focus-visible,
@@ -1021,8 +1225,13 @@
     .login-card { padding: 56px 22px 26px; }
     .panel-head { align-items: flex-start; gap: 7px; flex-wrap: wrap; }
     .panel-head > span, .chat-head-actions { max-width: 100%; }
-    .ask-bar { gap: 8px; padding-inline: 12px; }
-    .ask-bar button { min-width: 66px; padding-inline: 14px; }
+    #ingestPanel .panel-head, #chat .panel-head { align-items: center; }
+    .capture-input-shell { margin: 10px 10px 0; }
+    #ingestPanel #pasteBox { min-height: 220px; padding: 15px; }
+    #ingestPanel .scope-row { margin: 10px 10px 0; }
+    #ingestPanel .ingest-foot { margin: 10px; gap: 8px; flex-wrap: wrap; }
+    #chat .ask-bar { margin: 0 10px 10px; padding: 9px; }
+    #chat .ask-bar button { min-width: 68px; padding-inline: 12px; }
     button.save, .ask-bar button, .login-card .auth-submit { min-height: 44px; }
   }
   @media (prefers-reduced-motion: no-preference) {
@@ -1087,6 +1296,9 @@
       opacity: 1;
       animation: border-scan 1.15s cubic-bezier(.2, .8, .2, 1) 1;
     }
+    body > main:not([aria-hidden]) #ingestPanel:hover,
+    body > main:not([aria-hidden]) #chat:hover { transform: none; }
+    #ingestPanel:hover::before, #chat:hover::before { opacity: .42; }
     .mem { transition: background-color .18s ease, transform .18s ease; }
     .mem:hover { transform: translateX(3px); }
     button:not(:disabled):active, .tag:active { transform: scale(.98); }
@@ -1111,6 +1323,13 @@
       border: 1px solid CanvasText;
       box-shadow: none;
     }
+    .capture-input-shell, #ingestPanel .scope-row, #ingestPanel .ingest-foot,
+    #chat .ask-bar, #chat .ask-bar input, #ingestPanel #pasteBox {
+      color: CanvasText;
+      background: Canvas;
+      border-color: CanvasText;
+      box-shadow: none;
+    }
     button.save, .ask-bar button, .login-card .auth-submit,
     .similar-memory-actions .confirm, .edit-actions .confirm {
       color: ButtonText;
@@ -1123,8 +1342,8 @@
 
 <div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
   <section class="login-card">
-    <h2 id="loginTitle">기억 서랍</h2>
-    <p>내 기억과 모두의 기억을 안전하게 사용하세요</p>
+    <h2 id="loginTitle">궁궁타파</h2>
+    <p>흩어진 기억을 모아, 필요한 답을 바로 찾아보세요</p>
     <div class="auth-tabs" role="tablist" aria-label="계정 메뉴">
       <button class="auth-tab" type="button" id="loginTab" role="tab" aria-controls="loginForm" aria-selected="true">로그인</button>
       <button class="auth-tab" type="button" id="signupTab" role="tab" aria-controls="signupForm" aria-selected="false" tabindex="-1" hidden>회원가입</button>
@@ -1170,7 +1389,7 @@
 </div>
 
 <header inert aria-hidden="true">
-  <h1>기억 서랍</h1>
+  <h1>궁궁타파</h1>
   <p>Slack·메일·메모를 붙여넣어 저장하고, 나중에 물어보세요</p>
   <div class="session-info" id="sessionInfo" aria-label="현재 로그인 정보">
     <span class="session-user" id="sessionUser"></span>
@@ -1185,9 +1404,16 @@
 
 <main inert aria-hidden="true">
   <section>
-    <div class="panel role-hidden" id="ingestPanel">
-      <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
-      <textarea id="pasteBox" placeholder="업무 가이드, 일정, 메일 또는 메모를 여기에 붙여넣기&#10;&#10;예) 식대에서 법인카드 사용 방식&#10;- 인당 월 8만원 한도 내에서 사용&#10;- 4만원: 개인 식사 시 사용(가급적 파트 구성원과 함께 사용)&#10;- 4만원: 월 1회 파트 점심 또는 저녁식사 시 사용&#10;- 사용 후 적요에 [AI Talent] 내용을 입력해 정산&#10;  예: [AI Talent] 파트 점심식사"></textarea>
+    <div class="panel role-hidden" id="ingestPanel" aria-labelledby="ingestTitle">
+      <div class="panel-head">
+        <div class="panel-title-group"><span class="panel-kicker">CAPTURE</span><b id="ingestTitle">기억 저장</b></div>
+        <span>붙여넣으면 자동으로 분류·저장돼요</span>
+      </div>
+      <div class="capture-input-shell">
+        <div class="capture-toolbar" aria-hidden="true"><span class="capture-mode">RAW NOTE</span><span>AUTO CLASSIFY</span></div>
+        <label class="sr-only" for="pasteBox">저장할 기억 입력</label>
+        <textarea id="pasteBox" placeholder="업무 가이드, 일정, 메일 또는 메모를 여기에 붙여넣기&#10;&#10;예) 식대에서 법인카드 사용 방식&#10;- 인당 월 8만원 한도 내에서 사용&#10;- 4만원: 개인 식사 시 사용(가급적 파트 구성원과 함께 사용)&#10;- 4만원: 월 1회 파트 점심 또는 저녁식사 시 사용&#10;- 사용 후 적요에 [AI Talent] 내용을 입력해 정산&#10;  예: [AI Talent] 파트 점심식사"></textarea>
+      </div>
       <div id="saveResult" role="status" aria-live="polite"></div>
       <div class="scope-row">
         <fieldset class="scope-picker" aria-describedby="memoryScopeHelp">
@@ -1267,14 +1493,20 @@
     </div>
   </section>
 
-  <section class="panel" id="chat">
-    <div class="panel-head"><b>묻기</b><div class="chat-head-actions"><span>저장된 내용에서만 답해요</span><button class="chat-clear" onclick="clearChat()">대화 지우기</button></div></div>
+  <section class="panel" id="chat" aria-labelledby="chatTitle">
+    <div class="panel-head">
+      <div class="panel-title-group"><span class="panel-kicker">DIALOGUE</span><b id="chatTitle">기억과 대화</b></div>
+      <div class="chat-head-actions"><span>저장된 내용에서만 답해요</span><button class="chat-clear" onclick="clearChat()">대화 지우기</button></div>
+    </div>
     <div id="log" aria-live="polite">
-      <div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>
+      <div class="empty">아직 대화가 없어요.<br>궁금한 내용을 입력하면 저장된 기억에서 답을 찾아드려요.</div>
     </div>
     <div class="ask-bar">
-      <input id="askBox" placeholder="예: 식대에서 법인카드는 어떻게 사용하고 정산하면 돼?" onkeydown="if(event.key==='Enter')ask()">
-      <button id="askBtn" onclick="ask()">질문</button>
+      <div class="composer-meta"><label for="askBox">무엇이 궁금한가요?</label><span>ENTER TO SEND</span></div>
+      <div class="composer-row">
+        <input id="askBox" placeholder="예: 식대에서 법인카드는 어떻게 사용하고 정산하면 돼?" onkeydown="if(event.key==='Enter')ask()">
+        <button id="askBtn" onclick="ask()">질문</button>
+      </div>
     </div>
   </section>
 </main>
@@ -2823,7 +3055,7 @@ function renderChatHistory() {
 function resetChatView() {
   const empty = document.createElement('div');
   empty.className = 'empty';
-  empty.textContent = '아직 대화가 없어요. 저장한 내용에 대해 무엇이든 물어보세요.';
+  empty.textContent = '아직 대화가 없어요. 궁금한 내용을 입력하면 저장된 기억에서 답을 찾아드려요.';
   $('log').replaceChildren(empty);
 }
 
@@ -2831,7 +3063,7 @@ function clearChat() {
   if (!chatHistory.length || confirm("대화 이력을 모두 지울까요?")) {
     chatHistory = [];
     removeChatHistory();
-    $("log").innerHTML = `<div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>`;
+    $("log").innerHTML = `<div class="empty">아직 대화가 없어요.<br>궁금한 내용을 입력하면 저장된 기억에서 답을 찾아드려요.</div>`;
   }
 }
 
