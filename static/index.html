@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>궁궁타파</title>
+<title>궁금타파</title>
+<link rel="icon" type="image/png" sizes="256x256" href="/static/gungum-tapa-mark.png">
+<link rel="apple-touch-icon" href="/static/gungum-tapa-mark.png">
+<meta name="theme-color" content="#0B1029">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <style>
   :root {
@@ -635,18 +638,15 @@
     font-weight: 650;
     letter-spacing: -.035em;
   }
-  header h1::before {
-    content: "";
-    width: 30px;
-    height: 30px;
+  .brand-mark {
+    display: block;
+    width: 34px;
+    height: 34px;
     flex: 0 0 auto;
-    border: 1px solid rgba(150, 168, 237, .32);
-    border-radius: 10px;
-    background:
-      linear-gradient(135deg, rgba(139, 92, 246, .34), rgba(37, 99, 235, .08)),
-      rgba(12, 17, 41, .9);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 8px 22px rgba(0, 0, 0, .22);
+    object-fit: contain;
+    filter: drop-shadow(0 7px 15px rgba(27, 97, 255, .28));
   }
+  .brand-mark-login { width: 44px; height: 44px; }
   header p { color: var(--ink-soft); }
   .session-info { color: var(--ink-soft); }
   .session-info::before {
@@ -928,7 +928,7 @@
     letter-spacing: 1px;
   }
   .login-card::after {
-    content: "GUNGUNG TAPA";
+    content: "GUNGGEUM TAPA";
     position: absolute;
     top: 18px;
     right: 24px;
@@ -940,7 +940,14 @@
     font: 700 9px/1 var(--mono);
     letter-spacing: .07em;
   }
-  .login-card h2 { color: var(--ink); font-family: var(--mono); font-size: 20px; }
+  .login-card h2 {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 20px;
+  }
   .login-card > p { color: var(--ink-soft); }
   .auth-tabs {
     grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
@@ -1219,7 +1226,8 @@
   @media (max-width: 430px) {
     header { gap: 10px; padding-inline: 12px; }
     header h1 { font-size: 20px; }
-    header h1::before { width: 27px; height: 27px; }
+    .brand-mark-header { width: 30px; height: 30px; }
+    .brand-mark-login { width: 40px; height: 40px; }
     main { padding-inline: 12px; }
     .panel, .login-card, .similar-memory-dialog, .edit-dialog, .audit-dialog { border-radius: 17px; }
     .login-card { padding: 56px 22px 26px; }
@@ -1342,7 +1350,10 @@
 
 <div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
   <section class="login-card">
-    <h2 id="loginTitle">궁궁타파</h2>
+    <h2 id="loginTitle">
+      <img class="brand-mark brand-mark-login" src="/static/gungum-tapa-mark.png" alt="" aria-hidden="true" width="44" height="44">
+      <span>궁금타파</span>
+    </h2>
     <p>흩어진 기억을 모아, 필요한 답을 바로 찾아보세요</p>
     <div class="auth-tabs" role="tablist" aria-label="계정 메뉴">
       <button class="auth-tab" type="button" id="loginTab" role="tab" aria-controls="loginForm" aria-selected="true">로그인</button>
@@ -1389,7 +1400,10 @@
 </div>
 
 <header inert aria-hidden="true">
-  <h1>궁궁타파</h1>
+  <h1>
+    <img class="brand-mark brand-mark-header" src="/static/gungum-tapa-mark.png" alt="" aria-hidden="true" width="34" height="34">
+    <span>궁금타파</span>
+  </h1>
   <p>Slack·메일·메모를 붙여넣어 저장하고, 나중에 물어보세요</p>
   <div class="session-info" id="sessionInfo" aria-label="현재 로그인 정보">
     <span class="session-user" id="sessionUser"></span>

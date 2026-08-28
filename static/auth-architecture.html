@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light">
-<title>궁궁타파 · 인증과 기억 보호 구조</title>
+<title>궁금타파 · 인증과 기억 보호 구조</title>
+<link rel="icon" type="image/png" sizes="256x256" href="/static/gungum-tapa-mark.png">
+<link rel="apple-touch-icon" href="/static/gungum-tapa-mark.png">
 <style>
   :root {
     --paper: #f3f5f3;
@@ -40,7 +42,7 @@
     display: inline-flex; align-items: center; gap: 8px; color: var(--pine);
     font: 700 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase;
   }
-  .eyebrow::before { content: ""; width: 26px; height: 2px; background: var(--pine); }
+  .eyebrow img { width: 29px; height: 29px; object-fit: contain; filter: drop-shadow(0 5px 10px rgba(28, 98, 224, .18)); }
   h1 { max-width: 760px; margin: 15px 0 13px; font-size: clamp(32px, 5vw, 58px); line-height: 1.08; letter-spacing: -.045em; }
   .lead { max-width: 750px; margin: 0; color: var(--muted); font-size: clamp(15px, 2vw, 18px); }
   .hero-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 23px; }
@@ -183,11 +185,11 @@
 </head>
 <body>
 <header class="hero shell">
-  <span class="eyebrow">Memory Agent Security Map</span>
+  <span class="eyebrow"><img src="/static/gungum-tapa-mark.png" alt="" aria-hidden="true" width="29" height="29">궁금타파 · Security Map</span>
   <h1>회원가입부터 개인기억 보호까지</h1>
   <p class="lead">아이디는 사람이 기억하기 위한 이름이고, UUID는 시스템이 신뢰하는 실제 신원입니다. JWT가 그 UUID를 매 요청에 증명하고, Supabase RLS가 데이터베이스에서 마지막 접근 경계를 만듭니다.</p>
   <nav class="hero-actions" aria-label="문서 바로가기">
-    <a class="back" href="/">← 궁궁타파로</a>
+    <a class="back" href="/">← 궁금타파로</a>
     <a href="#signup">가입·로그인</a>
     <a href="#jwt">JWT</a>
     <a href="#rls">RLS</a>
@@ -359,6 +361,6 @@
   </section>
 </main>
 
-<footer class="shell">이 문서는 현재 궁궁타파의 인증·권한·데이터 경계를 설명하는 정적 기술 시각화입니다.</footer>
+<footer class="shell">이 문서는 현재 궁금타파의 인증·권한·데이터 경계를 설명하는 정적 기술 시각화입니다.</footer>
 </body>
 </html>
