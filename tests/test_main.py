@@ -3224,6 +3224,186 @@ ATL AI 도구 사용료는 지정 프로젝트와 비용 계정으로 처리합�
     assert [hit["_lexical_score"] for hit in hits] == [3, 2]
 
 
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("식대에서", "식대"),
+        ("식대에서는", "식대"),
+        ("법인카드는", "법인카드"),
+        ("법인카드로", "법인카드"),
+        ("법카로", "법카"),
+        ("식비가", "식비"),
+        ("식사비로", "식사비"),
+        ("회계과", "회계과"),
+        ("정산", "정산"),
+    ],
+)
+def test_strip_korean_query_particle_is_narrow(token, expected):
+    assert main._strip_korean_query_particle(token) == expected
+
+
+def test_lexical_query_concepts_normalize_meal_card_wording_once():
+    assert main._lexical_query_concepts(
+        "식대에서 법인카드 처리 어떻게 해?"
+    ) == [
+        frozenset({"식대", "식사비", "식비"}),
+        frozenset({"법인카드", "법카"}),
+        frozenset({"처리", "정산", "결제"}),
+    ]
+    assert len(main._lexical_query_concepts(
+        "식대 식사비 식비 법인카드 법카 처리 정산 결제"
+    )) == 3
+
+
+def _meal_card_search_rows():
+    registration_guide = _memory(
+        "registration-guide",
+        content="""[유형] 비용 관리 가이드
+[제목] 파트 의욕관리비 관련 구글 시트
+[목적]
+법인카드 사용 내역을 등록하고 정산하는 방법을 안내합니다.
+[검색 키워드]
+파트 의욕관리비, 비용 관리, 법인카드, 정산, 구글 시트, 사용 내역
+[검색 질문 예시]
+의욕관리비 사용 후 어떻게 정산해?""",
+    )
+    meal_card_guide = _memory(
+        "meal-card-guide",
+        content="""제목: 법인카드 사용 및 정산 가이드
+구분: 비용 및 법인카드 운영
+적용 대상: AI Tech Innovation 파트 구성원
+배정 금액: 인당 월 80,000원
+
+사용 기준:
+- 개인 식사비: 월 40,000원
+- 파트 공동 식사비: 월 40,000원
+
+파트 공동 식사비 사용 방법:
+- 월 1회 사용
+- 파트 구성원 전체가 함께하는 점심 또는 저녁 식사에 사용
+
+정산 방법:
+- 적요 형식: [AI Talent] 내용
+- 정산 예시: [AI Talent] 파트 점심식사""",
+    )
+    meal_card_guide["metadata"]["subject"] = "법인카드 사용 및 정산 가이드"
+    return registration_guide, meal_card_guide
+
+
+def test_lexical_meal_card_query_selects_policy_not_registration_guide():
+    registration_guide, meal_card_guide = _meal_card_search_rows()
+
+    hits = main.lexical_memory_hits(
+        "식대에서 법인카드 처리 어떻게 해?",
+        [registration_guide, meal_card_guide],
+    )
+
+    assert [(hit["id"], hit["_lexical_score"]) for hit in hits] == [
+        ("meal-card-guide", 3),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_score"),
+    [
+        ("식대에서 법인카드는 어떻게 사용하고 정산하면 돼?", 3),
+        ("식비가 법인카드로 처리해도 돼?", 3),
+        ("식사비로 법카로 정산 방법 알려줘", 4),
+        ("식대에서 법인 카드로 결제 어떻게 해?", 3),
+        ("식사비가 법인 카드는 정산 어떻게 해?", 3),
+    ],
+)
+def test_lexical_meal_card_query_handles_particles_and_action_inflections(
+    question,
+    expected_score,
+):
+    registration_guide, meal_card_guide = _meal_card_search_rows()
+
+    hits = main.lexical_memory_hits(
+        question,
+        [registration_guide, meal_card_guide],
+    )
+
+    assert [(hit["id"], hit["_lexical_score"]) for hit in hits] == [
+        ("meal-card-guide", expected_score),
+    ]
+
+
+def test_lexical_non_policy_query_preserves_two_term_matching():
+    rows = [_memory("deployment", content="ATL 배포는 수요일에 진행합니다.")]
+
+    hits = main.lexical_memory_hits("ATL 배포 일정", rows)
+
+    assert [(hit["id"], hit["_lexical_score"]) for hit in hits] == [
+        ("deployment", 2),
+    ]
+
+
+def test_lexical_search_preserves_meaningful_method_term():
+    rows = [_memory("deployment", content="ATL 배포는 수요일에 진행합니다.")]
+
+    assert main.lexical_memory_hits("배포 방법", rows) == []
+
+
+def test_lexical_alias_matches_at_start_of_compound_not_inside_word():
+    rows = [
+        _memory("card-guide", content="법인카드사용법 안내"),
+        _memory("unrelated-card", content="불법카드 사용법 안내"),
+        _memory("card-company", content="법인카드사 사용법 안내"),
+        _memory("cafe", content="법카페 사용법 안내"),
+    ]
+
+    hits = main.lexical_memory_hits("법인카드 사용법 알려줘", rows)
+
+    assert [hit["id"] for hit in hits] == ["card-guide"]
+
+
+def test_finance_synonyms_do_not_expand_outside_finance_context():
+    rows = [_memory("civil-service", content="민원 정산 일정과 접수 창구 안내")]
+
+    assert main.lexical_memory_hits("민원 처리 어떻게 해?", rows) == []
+
+
+def test_meal_card_synonyms_do_not_match_inside_unrelated_words():
+    rows = [_memory(
+        "unrelated-compounds",
+        content="주식대금, 불법카드, 간식비 처리 내역",
+    )]
+
+    assert main.lexical_memory_hits(
+        "식대에서 법인카드 처리 어떻게 해?",
+        rows,
+    ) == []
+
+
+def test_prepare_answer_meal_card_query_uses_actual_policy_only(monkeypatch):
+    registration_guide, meal_card_guide = _meal_card_search_rows()
+    monkeypatch.setattr(
+        main,
+        "memory_catalog",
+        lambda _db, _user_id: [registration_guide, meal_card_guide],
+    )
+    monkeypatch.setattr(
+        main,
+        "embed",
+        lambda _texts: pytest.fail("full lexical match must avoid vector search"),
+    )
+
+    prepared = main.prepare_answer(
+        main.AskRequest(question="식대에서 법인카드 처리 어떻게 해?"),
+        object(),
+        _user(),
+    )
+
+    assert [source["id"] for source in prepared["sources"]] == ["meal-card-guide"]
+    prompt = prepared["messages"][-1]["content"]
+    assert "인당 월 80,000원" in prompt
+    assert "개인 식사비: 월 40,000원" in prompt
+    assert "파트 공동 식사비: 월 40,000원" in prompt
+    assert "[AI Talent] 내용" in prompt
+    assert "파트 의욕관리비 관련 구글 시트" not in prompt
+
+
 def test_prepare_answer_exact_expense_query_keeps_best_hit_and_grounded_fields(
     monkeypatch,
 ):

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1246,17 +1247,123 @@ def memory_is_expired(item: dict, now: Optional[datetime] = None) -> bool:
 SEARCH_STOPWORDS = {
     "알려줘", "알려", "무엇", "뭐야", "뭐지", "주소는", "주소", "정보", "관련",
     "url", "링크", "링크는", "현재", "저장", "내용", "대한", "있는", "해줘",
-    "보여줘", "please",
+    "보여줘", "어떻게", "어떡해", "please",
 }
+
+SEARCH_TOKEN_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]+|[가-힣]{2,}"
+)
+KOREAN_QUERY_PARTICLE_SUFFIXES = (
+    "에서는", "으로는", "에서", "로는", "은", "는", "을", "를",
+)
+KOREAN_CONCEPT_PARTICLE_SUFFIXES = (
+    "으로", "로", "이", "가", "과", "와", "의", "도", "에",
+)
+MEAL_EXPENSE_CONCEPT = frozenset({"식대", "식사비", "식비"})
+CORPORATE_CARD_CONCEPT = frozenset({"법인카드", "법카"})
+FINANCE_ACTION_CONCEPT = frozenset({"처리", "정산", "결제"})
+FINANCE_ACTION_INFLECTION_PREFIXES = (
+    "하", "해", "했", "되", "돼", "됐", "할", "한", "함", "중", "방법",
+)
+CONCEPT_COMPOUND_SUFFIX_PREFIXES = (
+    "사용", "정산", "결제", "처리", "관리", "운영", "가이드", "안내", "내역",
+    "비용", "한도", "규정", "정책", "방법", "기준", "영수증", "금액", "지원",
+    "신청", "등록", "승인",
+)
+FINANCE_CONCEPT_TERMS = (
+    MEAL_EXPENSE_CONCEPT
+    | CORPORATE_CARD_CONCEPT
+    | FINANCE_ACTION_CONCEPT
+)
+FINANCE_CONTEXT_TERMS = (
+    MEAL_EXPENSE_CONCEPT
+    | CORPORATE_CARD_CONCEPT
+    | {"비용"}
+)
+MEAL_CARD_POLICY_CONCEPTS = (
+    MEAL_EXPENSE_CONCEPT,
+    CORPORATE_CARD_CONCEPT,
+    FINANCE_ACTION_CONCEPT,
+)
+
+
+def _strip_korean_query_particle(token: str) -> str:
+    for suffix in KOREAN_QUERY_PARTICLE_SUFFIXES:
+        if token.endswith(suffix):
+            stem = token[:-len(suffix)]
+            if len(stem) >= 2:
+                return stem
+    for suffix in KOREAN_CONCEPT_PARTICLE_SUFFIXES:
+        if token.endswith(suffix):
+            stem = token[:-len(suffix)]
+            if stem in FINANCE_CONCEPT_TERMS:
+                return stem
+    return token
+
+
+def _search_tokens(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).lower()
+    normalized = re.sub(
+        r"(?<![가-힣])법인\s+카드",
+        "법인카드",
+        normalized,
+    )
+    return [
+        _strip_korean_query_particle(match.group(0))
+        for match in SEARCH_TOKEN_PATTERN.finditer(normalized)
+    ]
+
+
+def _is_finance_action_token(token: str) -> bool:
+    for action in FINANCE_ACTION_CONCEPT:
+        if token == action:
+            return True
+        if token.startswith(action):
+            suffix = token[len(action):]
+            if suffix.startswith(FINANCE_ACTION_INFLECTION_PREFIXES):
+                return True
+    return False
+
+
+def _concept_term_matches_token(term: str, token: str) -> bool:
+    if token == term:
+        return True
+    if not token.startswith(term):
+        return False
+    suffix = token[len(term):]
+    return suffix.startswith(CONCEPT_COMPOUND_SUFFIX_PREFIXES)
+
+
+def _lexical_query_concepts(question: str) -> list[frozenset[str]]:
+    tokens = _search_tokens(question)
+    finance_context = any(token in FINANCE_CONTEXT_TERMS for token in tokens)
+    concepts = []
+    seen = set()
+    for token in tokens:
+        if token in SEARCH_STOPWORDS:
+            continue
+        if token in MEAL_EXPENSE_CONCEPT:
+            concept = MEAL_EXPENSE_CONCEPT
+        elif token in CORPORATE_CARD_CONCEPT:
+            concept = CORPORATE_CARD_CONCEPT
+        elif finance_context and _is_finance_action_token(token):
+            concept = FINANCE_ACTION_CONCEPT
+        else:
+            concept = frozenset({token})
+        if concept not in seen:
+            seen.add(concept)
+            concepts.append(concept)
+    return concepts
 
 
 def lexical_memory_hits(question: str, rows: list[dict]) -> list[dict]:
-    terms = {
-        token.lower() for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]+|[가-힣]{2,}", question)
-        if token.lower() not in SEARCH_STOPWORDS
-    }
-    if not terms:
+    concepts = _lexical_query_concepts(question)
+    if not concepts:
         return []
+    meal_card_policy_query = all(
+        concept in concepts for concept in MEAL_CARD_POLICY_CONCEPTS
+    )
+    required_matches = min(3 if meal_card_policy_query else 2, len(concepts))
 
     scored = []
     for row in rows:
@@ -1267,12 +1374,34 @@ def lexical_memory_hits(question: str, rows: list[dict]) -> list[dict]:
             str(meta.get("project") or ""),
             " ".join(meta.get("tags") or []),
         ]).lower()
-        searchable_compact = re.sub(r"\s+", "", searchable)
-        matched = sum(
-            re.sub(r"\s+", "", term) in searchable_compact
-            for term in terms
+        searchable_compact = re.sub(
+            r"\s+", "", unicodedata.normalize("NFKC", searchable)
         )
-        if matched >= 2 or (matched == 1 and len(terms) == 1):
+        searchable_tokens = set(_search_tokens(searchable))
+        matched_concepts = []
+        for concept in concepts:
+            if concept == FINANCE_ACTION_CONCEPT:
+                concept_matches = any(
+                    _is_finance_action_token(token)
+                    for token in searchable_tokens
+                )
+            elif len(concept) > 1:
+                concept_matches = any(
+                    _concept_term_matches_token(term, token)
+                    for token in searchable_tokens
+                    for term in concept
+                )
+            else:
+                concept_matches = next(iter(concept)) in searchable_compact
+            if concept_matches:
+                matched_concepts.append(concept)
+        matched = len(matched_concepts)
+        if meal_card_policy_query and not all(
+            concept in matched_concepts
+            for concept in MEAL_CARD_POLICY_CONCEPTS
+        ):
+            continue
+        if matched >= required_matches:
             hit = dict(row)
             hit["similarity"] = min(0.99, 0.82 + 0.05 * matched)
             hit["_lexical_score"] = matched
