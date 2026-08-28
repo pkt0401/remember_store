@@ -3,1115 +3,1634 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>기억 서랍</title>
+<title>궁금타파 · 記憶の茶室</title>
+<link rel="icon" type="image/png" sizes="256x256" href="/static/gungum-tapa-mark.png">
+<link rel="apple-touch-icon" href="/static/gungum-tapa-mark.png">
+<meta name="theme-color" content="#275E43">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;500;700;800&family=Noto+Serif+KR:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
 <style>
+/* ==========================================================================
+   궁금타파 · 記 · 覚 · 問  |  Memory Chashitsu — Japanese teahouse redesign
+   Palette derived from Fukuda Chaya (福田茶屋): matcha, sumi ink, washi paper.
+   Signature: falling sakura petals + red hanko (rakkan) seals on section marks.
+   ========================================================================== */
+
   :root {
-    --bg: #F2F4F3;
-    --panel: #FFFFFF;
-    --ink: #17211D;
-    --ink-soft: #5A6663;
-    --line: #DDE3E0;
-    --pine: #2E6B50;
-    --pine-soft: #E4EFE9;
-    --amber: #8A6A2F;
-    --amber-soft: #F3ECDD;
-    --slate: #44566B;
-    --slate-soft: #E5EAF0;
-    --mono: "SF Mono", "D2Coding", ui-monospace, monospace;
+    --washi: #F5EFE1;
+    --washi-2: #EDE4CE;
+    --washi-3: #E4D8BA;
+    --panel: #FBF7EC;
+    --panel-alt: #F1E9D2;
+    --sumi: #1B2620;
+    --sumi-2: #2A3A32;
+    --sumi-soft: #55635B;
+    --sumi-mute: #8A8574;
+    --line: #C9BE9E;
+    --line-soft: #DFD5B7;
+    --matcha: #275E43;
+    --matcha-2: #37835B;
+    --matcha-deep: #1B4A33;
+    --matcha-soft: #E1EBD9;
+    --matcha-wash: #EFF3E4;
+    --shu: #A63B2E;         /* 朱 vermilion for danger/hanko */
+    --shu-2: #C24A38;
+    --shu-soft: #F4E1DC;
+    --sakura: #E9B7C4;
+    --sakura-deep: #D98CA6;
+    --sakura-soft: #F9E7EC;
+    --kin: #A8802E;         /* 金 gold for approvals */
+    --kin-soft: #F2E7C8;
+    --bamboo: #7C8A69;
+
+    --serif-jp: "Shippori Mincho B1", "Noto Serif JP", "Noto Serif KR", "Nanum Myeongjo", serif;
+    --serif-ko: "Noto Serif KR", "Shippori Mincho B1", "Nanum Myeongjo", serif;
+    --sans: "Pretendard Variable", Pretendard, "Noto Sans KR", system-ui, -apple-system, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", "D2Coding", ui-monospace, monospace;
+
+    --radius: 2px;
+    --radius-lg: 4px;
+    --shadow-ink: 0 1px 0 rgba(27, 38, 32, 0.04), 0 24px 60px -32px rgba(27, 38, 32, 0.32);
   }
+
   * { box-sizing: border-box; margin: 0; }
+
+  html, body { height: 100%; }
+
   body {
-    background: var(--bg);
-    color: var(--ink);
-    font-family: "Pretendard Variable", Pretendard, sans-serif;
+    background: var(--washi);
+    color: var(--sumi);
+    font-family: var(--serif-ko);
+    font-feature-settings: "palt", "kern";
+    letter-spacing: 0.005em;
+    line-height: 1.65;
     min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
   }
+
+  /* Washi paper texture — subtle grain over the cream backdrop */
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background-image:
+      radial-gradient(rgba(70, 55, 30, 0.05) 1px, transparent 1.4px),
+      radial-gradient(rgba(140, 105, 55, 0.03) 1px, transparent 1.6px);
+    background-size: 3px 3px, 7px 7px;
+    background-position: 0 0, 1px 2px;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.9;
+  }
+
+  /* Sakura canvas — behind content, above the paper grain */
+  #sakuraCanvas {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  header, main, #loginOverlay, .similar-memory-dialog, .edit-dialog, .audit-dialog {
+    position: relative;
+    z-index: 2;
+  }
+
+  /* ------ Motion glow (JS toggled) — soft ambient warm circle ------ */
+  .motion-pointer-glow {
+    position: fixed;
+    top: 0; left: 0;
+    width: 480px; height: 480px;
+    margin: -240px 0 0 -240px;
+    border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(233, 183, 196, 0.20), rgba(233, 183, 196, 0) 70%);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 400ms ease, transform 200ms ease-out;
+    z-index: 3;
+    mix-blend-mode: multiply;
+  }
+  .motion-pointer-glow.is-visible { opacity: 0.85; }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+
+  /* ==========================================================================
+     LOGIN OVERLAY · 玄関 (genkan, the entrance)
+     ========================================================================== */
+  #loginOverlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 20px;
+    background:
+      radial-gradient(ellipse at 50% -10%, rgba(39, 94, 67, 0.18), transparent 55%),
+      radial-gradient(ellipse at 15% 100%, rgba(233, 183, 196, 0.28), transparent 45%),
+      radial-gradient(ellipse at 90% 90%, rgba(166, 59, 46, 0.10), transparent 50%),
+      linear-gradient(180deg, #F7F1E3 0%, #EFE6CE 100%);
+    z-index: 200;
+  }
+  #loginOverlay.show { display: flex; }
+
+  /* Vertical japanese kicker down the left edge on desktop */
+  #loginOverlay::before {
+    content: "きおくの茶室・記憶をひとつぶ、ひとつぶ";
+    position: absolute;
+    top: 44px; left: 44px;
+    writing-mode: vertical-rl;
+    font-family: var(--serif-jp);
+    font-size: 12px;
+    letter-spacing: 0.35em;
+    color: var(--matcha);
+    opacity: 0.75;
+  }
+  #loginOverlay::after {
+    content: "MEMORY  CHASHITSU  ·  記 · 覚 · 問";
+    position: absolute;
+    bottom: 36px; right: 44px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.5em;
+    color: var(--matcha-deep);
+    opacity: 0.7;
+  }
+
+  .login-card {
+    width: min(460px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-top: 3px solid var(--matcha);
+    padding: 56px 44px 44px;
+    box-shadow: var(--shadow-ink);
+    position: relative;
+    text-align: center;
+  }
+  /* Circular brand seal on top of the card */
+  .login-card::before {
+    content: "記";
+    position: absolute;
+    top: -34px; left: 50%;
+    transform: translateX(-50%);
+    width: 68px; height: 68px;
+    border-radius: 50%;
+    background: var(--matcha);
+    color: var(--washi);
+    font-family: var(--serif-jp);
+    font-size: 32px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 0 6px var(--panel), 0 12px 24px -12px rgba(27,38,32,0.45);
+    letter-spacing: 0;
+  }
+  /* Small hanko square accent */
+  .login-card::after {
+    content: "覚";
+    position: absolute;
+    top: 44px; right: 32px;
+    width: 26px; height: 26px;
+    background: var(--shu);
+    color: #fff;
+    font-family: var(--serif-jp);
+    font-size: 15px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 0;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.06);
+  }
+
+  .login-card h2 {
+    font-family: var(--serif-jp);
+    font-weight: 700;
+    font-size: 30px;
+    letter-spacing: 0.12em;
+    color: var(--sumi);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .login-card h2 .brand-mark { display: none; } /* hide legacy raster mark, seal replaces it */
+  .login-card h2 span { display: block; }
+  .login-card h2::after {
+    content: "きおくの 茶室 · Memory Chashitsu";
+    font-family: var(--serif-jp);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0.42em;
+    color: var(--matcha);
+    margin-top: 8px;
+  }
+  .login-card > p {
+    color: var(--sumi-soft);
+    font-size: 13.5px;
+    font-family: var(--serif-ko);
+    letter-spacing: 0.02em;
+    margin-bottom: 26px;
+    padding-bottom: 22px;
+    position: relative;
+  }
+  .login-card > p::after {
+    content: "";
+    position: absolute;
+    bottom: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 46px; height: 1px;
+    background: var(--line);
+  }
+
+  .auth-tabs {
+    display: inline-flex;
+    gap: 22px;
+    border-bottom: 1px solid var(--line-soft);
+    margin-bottom: 22px;
+  }
+  .auth-tab {
+    background: none;
+    border: 0;
+    padding: 10px 4px;
+    font-family: var(--serif-jp);
+    font-size: 14px;
+    letter-spacing: 0.14em;
+    color: var(--sumi-mute);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color 180ms ease, border-color 180ms ease;
+  }
+  .auth-tab:hover { color: var(--sumi); }
+  .auth-tab[aria-selected="true"] {
+    color: var(--matcha);
+    border-bottom-color: var(--matcha);
+  }
+
+  .auth-note {
+    font-size: 12px;
+    color: var(--sumi-soft);
+    background: var(--matcha-wash);
+    border-left: 2px solid var(--matcha);
+    padding: 10px 14px;
+    text-align: left;
+    margin-bottom: 16px;
+  }
+  .auth-note strong { color: var(--matcha); font-family: var(--serif-jp); }
+
+  .auth-form { display: block; text-align: left; }
+  .auth-form[hidden], [hidden] { display: none !important; }
+  .auth-field { margin-bottom: 14px; }
+  .auth-field label {
+    display: block;
+    font-family: var(--serif-jp);
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    color: var(--matcha);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  .auth-field input {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 10px 2px;
+    font-family: var(--serif-ko);
+    font-size: 15px;
+    color: var(--sumi);
+    outline: none;
+    transition: border-color 180ms ease;
+  }
+  .auth-field input:focus { border-bottom-color: var(--matcha); }
+  .auth-field input::placeholder { color: var(--sumi-mute); font-style: italic; }
+
+  .auth-submit {
+    display: block;
+    width: 100%;
+    margin-top: 20px;
+    padding: 14px 20px;
+    background: var(--matcha);
+    color: var(--washi);
+    border: 0;
+    border-radius: var(--radius);
+    font-family: var(--serif-jp);
+    font-size: 15px;
+    letter-spacing: 0.35em;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 180ms ease, transform 120ms ease;
+    position: relative;
+  }
+  .auth-submit:hover { background: var(--matcha-deep); }
+  .auth-submit:active { transform: translateY(1px); }
+  .auth-submit:focus-visible { outline: 2px solid var(--sakura-deep); outline-offset: 3px; }
+
+  .login-err {
+    margin-top: 14px;
+    color: var(--shu);
+    font-size: 12.5px;
+    min-height: 18px;
+    text-align: left;
+  }
+  .signup-ok { color: var(--matcha); }
+
+  /* ==========================================================================
+     HEADER · 暖簾 (noren)
+     ========================================================================== */
   header {
-    padding: 28px 32px 18px;
-    display: flex; align-items: center; gap: 14px;
+    padding: 30px 44px 22px;
+    display: flex;
+    align-items: flex-end;
+    gap: 22px;
+    max-width: 1360px;
+    margin: 0 auto;
+    position: relative;
   }
-  header h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
-  header p { color: var(--ink-soft); font-size: 13px; }
+  header::after {
+    content: "";
+    position: absolute;
+    left: 44px; right: 44px; bottom: 0;
+    height: 1px;
+    background:
+      repeating-linear-gradient(90deg, var(--line) 0 6px, transparent 6px 12px);
+  }
+  header h1 {
+    font-family: var(--serif-jp);
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--sumi);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    position: relative;
+    padding-left: 52px;
+  }
+  header h1::before {
+    content: "記";
+    position: absolute;
+    left: 0; top: 50%;
+    transform: translateY(-50%);
+    width: 42px; height: 42px;
+    background: var(--matcha);
+    color: var(--washi);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--serif-jp);
+    font-size: 20px;
+    letter-spacing: 0;
+  }
+  header h1 .brand-mark { display: none; }
+  header h1 span { display: inline-block; }
+  header h1::after {
+    content: "きおくの茶室";
+    font-family: var(--serif-jp);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0.4em;
+    color: var(--matcha);
+    margin-left: 10px;
+    align-self: center;
+    padding: 4px 8px;
+    border: 1px solid var(--matcha);
+    border-radius: 1px;
+  }
+  header > p {
+    color: var(--sumi-soft);
+    font-size: 12.5px;
+    font-family: var(--serif-ko);
+    letter-spacing: 0.04em;
+    padding-bottom: 4px;
+  }
+
   .session-info {
-    margin-left: auto; display: none; align-items: center; gap: 8px; flex-wrap: wrap;
-    color: var(--ink-soft); font-size: 11.5px;
+    margin-left: auto;
+    display: none;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 11.5px;
+    color: var(--sumi-soft);
+    padding-bottom: 4px;
   }
   .session-info.show { display: flex; }
-  .session-user { font-weight: 650; color: var(--ink); overflow-wrap: anywhere; }
+  .session-user {
+    font-family: var(--serif-jp);
+    font-weight: 700;
+    color: var(--sumi);
+    overflow-wrap: anywhere;
+    letter-spacing: 0.05em;
+  }
   .session-role {
-    padding: 2px 6px; border-radius: 4px; background: var(--slate-soft);
-    color: var(--slate); font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 3px 8px;
+    background: var(--matcha);
+    color: var(--washi);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    border-radius: 1px;
   }
   .usage-balance {
-    padding: 2px 7px; border-radius: 4px; background: var(--pine-soft);
-    color: var(--pine); font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 3px 8px;
+    background: var(--kin-soft);
+    color: var(--kin);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
     white-space: nowrap;
+    border-radius: 1px;
   }
+
   .logout-button, .activity-button, .account-button, .architecture-button {
-    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
-    border-radius: 6px; padding: 5px 8px; font-size: 11px; cursor: pointer;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--sumi-soft);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    font-size: 11px;
+    font-family: var(--serif-jp);
+    letter-spacing: 0.15em;
+    cursor: pointer;
     white-space: nowrap;
+    text-decoration: none;
+    transition: color 180ms ease, border-color 180ms ease, background 180ms ease;
   }
-  .activity-button:hover, .account-button:hover, .architecture-button:hover { border-color: var(--pine); color: var(--pine); }
-  .architecture-button { text-decoration: none; }
-  .logout-button:hover { border-color: #D8B7B1; color: #8C3B2E; }
+  .activity-button:hover, .account-button:hover, .architecture-button:hover {
+    color: var(--matcha);
+    border-color: var(--matcha);
+    background: var(--matcha-wash);
+  }
+  .logout-button:hover {
+    color: var(--shu);
+    border-color: var(--shu);
+    background: var(--shu-soft);
+  }
   .role-hidden { display: none !important; }
+
+  /* ==========================================================================
+     MAIN GRID · 座敷 (zashiki) — panels laid out on the tatami
+     ========================================================================== */
   main {
     display: grid;
-    grid-template-columns: minmax(340px, 460px) 1fr;
-    gap: 20px;
-    padding: 0 32px 32px;
-    max-width: 1280px;
+    grid-template-columns: minmax(340px, 480px) 1fr;
+    gap: 26px;
+    padding: 22px 44px 60px;
+    max-width: 1360px;
+    margin: 0 auto;
     align-items: start;
   }
+  main > section:first-child { display: flex; flex-direction: column; gap: 22px; }
+
+  /* Washi paper card */
   .panel {
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 14px;
+    border-radius: var(--radius);
     overflow: hidden;
-  }
-  .panel-head {
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--line);
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .panel-head b { font-size: 14px; font-weight: 700; }
-  .panel-head span { font-size: 12px; color: var(--ink-soft); }
-  .chat-head-actions { display: flex; align-items: center; gap: 10px; }
-  .chat-clear {
-    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
-    border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer;
-  }
-  .chat-clear:hover { color: #8C3B2E; border-color: #D8B7B1; }
-
-  /* ---- ingest ---- */
-  textarea {
-    width: 100%; border: none; resize: vertical;
-    min-height: 220px; padding: 16px 18px;
-    font: 14px/1.6 "Pretendard Variable", sans-serif;
-    color: var(--ink); background: transparent; outline: none;
-  }
-  textarea::placeholder { color: #A6B0AC; }
-  .scope-row {
-    display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px;
-    align-items: center; padding: 10px 18px; border-top: 1px solid var(--line);
-    background: #FAFBFA;
-  }
-  .scope-picker { display: flex; gap: 6px; padding: 0; border: 0; }
-  .scope-picker label {
-    display: flex; align-items: center; gap: 5px; cursor: pointer;
-    color: var(--ink); font-size: 12px; font-weight: 600;
-  }
-  .scope-picker label + label { margin-left: 4px; }
-  .scope-picker input { margin: 0; accent-color: var(--pine); }
-  .scope-help { color: var(--ink-soft); font-size: 11px; line-height: 1.45; }
-  .ingest-foot {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 12px 18px; border-top: 1px solid var(--line);
-  }
-  .hint { font-size: 12px; color: var(--ink-soft); }
-  button.save {
-    background: var(--pine); color: #fff; border: none;
-    padding: 9px 22px; border-radius: 8px;
-    font-size: 14px; font-weight: 600; cursor: pointer;
-  }
-  button.save:disabled { opacity: .5; cursor: default; }
-  button.save:focus-visible, .ask-bar button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-  #saveResult { padding: 0 18px; }
-  .save-ok {
-    margin: 12px 0; padding: 10px 14px; border-radius: 8px;
-    background: var(--pine-soft); color: var(--pine);
-    font-size: 13px; font-weight: 500;
-  }
-  .save-err { background: #F7E4E1; color: #8C3B2E; }
-
-  /* ---- similar-memory confirmation ---- */
-  #similarMemoryOverlay {
-    display: none; position: fixed; inset: 0; z-index: 30;
-    background: rgba(23, 33, 29, .45); align-items: center; justify-content: center;
-    padding: 20px;
-  }
-  #similarMemoryOverlay.show { display: flex; }
-  .similar-memory-dialog {
-    width: min(680px, 100%); max-height: calc(100vh - 40px); overflow: hidden;
-    background: #fff; border: 1px solid var(--line); border-radius: 8px;
-    display: flex; flex-direction: column;
-  }
-  .similar-memory-intro {
-    padding: 13px 18px; border-bottom: 1px solid var(--line);
-    color: var(--ink-soft); font-size: 12.5px; line-height: 1.55;
-  }
-  .similar-memory-list { overflow-y: auto; }
-  .similar-memory-item { padding: 13px 18px; border-bottom: 1px solid var(--line); }
-  .similar-memory-labels { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
-  .similar-memory-score {
-    padding: 2px 6px; border-radius: 4px; background: var(--amber-soft);
-    color: var(--amber); font-size: 10px; font-weight: 700;
-  }
-  .similar-memory-content {
-    color: var(--ink); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere;
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
-    overflow: hidden;
-  }
-  .similar-memory-meta { margin-top: 6px; color: var(--ink-soft); font-size: 11px; }
-  .similar-memory-actions {
-    display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px;
-  }
-  .similar-memory-actions button {
-    border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px;
-    font-size: 12px; font-weight: 650; cursor: pointer;
-  }
-  .similar-memory-actions .cancel { background: #fff; color: var(--ink-soft); }
-  .similar-memory-actions .confirm {
-    background: var(--pine); border-color: var(--pine); color: #fff;
-  }
-  .similar-memory-actions button:disabled { opacity: .55; cursor: wait; }
-
-  /* ---- recent list ---- */
-  #recent { margin-top: 20px; }
-  .mem {
-    padding: 12px 18px; border-top: 1px solid var(--line);
-    display: flex; gap: 10px; align-items: flex-start;
-  }
-  .mem:first-of-type { border-top: none; }
-  .mem .txt { flex: 1; font-size: 13px; line-height: 1.55; color: var(--ink); }
-  .mem .txt small { display: block; color: var(--ink-soft); margin-top: 3px; font-size: 11.5px; }
-  .mem button {
-    border: none; background: none; color: #B9C2BE;
-    cursor: pointer; font-size: 15px; padding: 2px 4px;
-  }
-  .mem button:hover { color: #8C3B2E; }
-  .mem button:disabled { opacity: .5; cursor: wait; }
-  .mem-actions { display: flex; flex-direction: column; gap: 3px; }
-  .mem-actions button.edit:hover { color: var(--pine); }
-  .mem-labels {
-    display: flex; flex: 0 0 auto; flex-direction: column;
-    align-items: flex-start; gap: 4px;
-  }
-  .chip {
-    font-family: var(--mono); font-size: 10.5px; font-weight: 600;
-    padding: 3px 8px; border-radius: 5px; white-space: nowrap; margin-top: 1px;
-  }
-  .chip.slack { background: var(--slate-soft); color: var(--slate); }
-  .chip.email { background: var(--amber-soft); color: var(--amber); }
-  .chip.note  { background: var(--pine-soft); color: var(--pine); }
-  .scope-badge {
-    font-family: var(--mono); font-size: 9.5px; font-weight: 700;
-    padding: 2px 6px; border-radius: 4px; white-space: nowrap;
-  }
-  .scope-badge.personal { background: var(--amber-soft); color: var(--amber); }
-  .scope-badge.shared { background: var(--pine-soft); color: var(--pine); }
-  .scope-badge.pending { background: var(--slate-soft); color: var(--slate); }
-  .scope-badge.deletion { background: #F7E4E1; color: #8C3B2E; }
-  .mem.expired .txt { color: #A6B0AC; }
-  .badge-exp {
-    font-family: var(--mono); font-size: 10px; font-weight: 700;
-    padding: 2px 6px; border-radius: 4px; margin-left: 6px;
-    background: #F7E4E1; color: #8C3B2E;
-  }
-  .badge-until {
-    font-family: var(--mono); font-size: 10px;
-    color: var(--ink-soft); margin-left: 6px;
-  }
-  button.clean {
-    border: 1px solid var(--line); background: #fff; color: #8C3B2E;
-    font-size: 11.5px; font-weight: 600; padding: 4px 10px;
-    border-radius: 6px; cursor: pointer;
-  }
-  button.clean:hover { background: #F7E4E1; }
-  .tagbar {
-    display: flex; flex-wrap: wrap; gap: 6px;
-    padding: 10px 18px; border-bottom: 1px solid var(--line);
-  }
-  .tagbar:empty { display: none; }
-  .tag {
-    font-size: 11.5px; font-weight: 600; cursor: pointer;
-    padding: 4px 10px; border-radius: 20px;
-    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
-  }
-  .tag:hover { border-color: var(--pine); color: var(--pine); }
-  .tag.on { background: var(--pine); border-color: var(--pine); color: #fff; }
-  .mem-tags { display: inline; }
-  .mem-tags i {
-    font-style: normal; font-size: 10.5px; color: var(--pine);
-    background: var(--pine-soft); padding: 1px 6px; border-radius: 4px; margin-left: 4px;
-  }
-  .section-tabs {
-    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
-    border-bottom: 1px solid var(--line); background: #fff;
-  }
-  .section-tabs button {
-    min-width: 0; border: none; border-right: 1px solid var(--line); background: #fff;
-    padding: 9px 4px; color: var(--ink-soft); font-size: 11px; font-weight: 600;
-    cursor: pointer; white-space: nowrap;
-  }
-  .section-tabs button:last-child { border-right: none; }
-  .section-tabs button.on { background: var(--pine-soft); color: var(--pine); }
-  .access-details {
-    flex: 1; display: grid; grid-template-columns: 1fr; gap: 5px;
-    font-size: 12px; line-height: 1.45; min-width: 0;
-  }
-  .access-title { font-size: 13px; font-weight: 700; color: var(--ink); }
-  .access-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 7px; }
-  .access-row b { color: var(--ink-soft); font-weight: 600; }
-  .access-row code, .access-row a {
-    color: var(--ink); font-family: var(--mono); font-size: 11px;
-    overflow-wrap: anywhere; text-decoration: none;
-  }
-  .access-row a:hover { color: var(--pine); text-decoration: underline; }
-  .filters {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
-    padding: 12px 18px; border-bottom: 1px solid var(--line); background: #FAFBFA;
-  }
-  .filters select, .filters input {
-    min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 6px;
-    padding: 8px 9px; background: #fff; color: var(--ink);
-    font: 12px "Pretendard Variable", sans-serif; outline: none;
-  }
-  .filters select:focus, .filters input:focus { border-color: var(--pine); }
-  .filter-dates { display: grid; grid-column: 1 / -1; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .filter-actions { display: flex; align-items: center; justify-content: flex-end; }
-  .filter-actions button {
-    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
-    border-radius: 6px; padding: 7px 10px; font-size: 11.5px; cursor: pointer;
-  }
-  .date-group {
-    padding: 9px 18px; border-top: 1px solid var(--line); background: #F7F9F8;
-    color: var(--ink-soft); font-size: 11px; font-weight: 700;
-  }
-  .more-wrap { padding: 10px 18px 14px; border-top: 1px solid var(--line); }
-  .more-wrap button {
-    width: 100%; border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
-    border-radius: 6px; padding: 8px; font-size: 12px; font-weight: 600; cursor: pointer;
-  }
-  .more-wrap button:hover { border-color: var(--pine); color: var(--pine); }
-  .status-badge {
-    display: inline-block; margin-left: 5px; padding: 1px 5px; border-radius: 4px;
-    background: var(--slate-soft); color: var(--slate); font-size: 10px; font-weight: 600;
-  }
-
-  /* ---- shared-memory approvals ---- */
-  #sharedApprovalPanel, #sharedDeletionApprovalPanel { margin-top: 20px; }
-  .approval-rule {
-    padding: 10px 18px; border-bottom: 1px solid var(--line);
-    background: #FAFBFA; color: var(--ink-soft); font-size: 11.5px; line-height: 1.5;
-  }
-  .approval-head-actions { display: flex; align-items: center; gap: 8px; }
-  .approval-refresh {
-    width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 6px;
-    background: #fff; color: var(--ink-soft); font-size: 16px; line-height: 1;
-    cursor: pointer;
-  }
-  .approval-refresh:hover { border-color: var(--pine); color: var(--pine); }
-  .approval-refresh:disabled { opacity: .55; cursor: wait; }
-  .approval-list { max-height: 300px; overflow-y: auto; }
-  .approval-item {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px;
-    align-items: center; padding: 12px 18px; border-top: 1px solid var(--line);
-  }
-  .approval-item:first-child { border-top: none; }
-  .approval-main { min-width: 0; }
-  .approval-labels { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
-  .approval-content {
-    font-size: 13px; line-height: 1.5; color: var(--ink);
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
-    overflow: hidden; overflow-wrap: anywhere;
-  }
-  .approval-meta { margin-top: 5px; color: var(--ink-soft); font-size: 11px; line-height: 1.4; }
-  .approval-action { min-width: 86px; text-align: right; }
-  .approval-action button {
-    border: 1px solid var(--pine); background: #fff; color: var(--pine);
-    border-radius: 6px; padding: 7px 10px; font-size: 11.5px; font-weight: 650;
-    cursor: pointer; white-space: nowrap;
-  }
-  .approval-action button:hover { background: var(--pine-soft); }
-  .approval-action button:disabled { opacity: .55; cursor: wait; }
-  .approval-empty, .approval-feedback {
-    padding: 14px 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.5;
-  }
-  .approval-feedback { display: none; border-top: 1px solid var(--line); color: var(--pine); }
-  .approval-feedback.show { display: block; }
-  .approval-feedback.error { color: #8C3B2E; }
-  .mem-actions button.delete-request {
-    border: 1px solid #D8B7B1; border-radius: 5px; padding: 4px 6px;
-    color: #8C3B2E; font-size: 10.5px; font-weight: 650; line-height: 1.2;
-    white-space: nowrap;
-  }
-  .mem-actions button.delete-request:hover { background: #F7E4E1; color: #8C3B2E; }
-
-  /* ---- login ---- */
-  #loginOverlay {
-    display: none; position: fixed; inset: 0; z-index: 10;
-    background: var(--bg);
-    align-items: center; justify-content: center; overflow-y: auto; padding: 20px;
-  }
-  #loginOverlay.show { display: flex; }
-  .login-card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-    padding: 30px 34px; width: min(410px, 100%); margin: auto; text-align: center;
-  }
-  .login-card h2 { font-size: 18px; font-weight: 800; margin-bottom: 6px; }
-  .login-card > p { font-size: 13px; color: var(--ink-soft); margin-bottom: 18px; }
-  .auth-tabs {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px;
-    margin-bottom: 18px; border-radius: 10px; background: var(--bg);
-  }
-  .login-card .auth-tab {
-    width: 100%; border: none; border-radius: 7px; padding: 8px;
-    background: transparent; color: var(--ink-soft); font-size: 13px;
-    font-weight: 650; cursor: pointer;
-  }
-  .login-card .auth-tab[aria-selected="true"] {
-    background: #fff; color: var(--pine); box-shadow: 0 1px 4px rgba(23, 33, 29, .09);
-  }
-  .auth-form[hidden] { display: none; }
-  .auth-field { text-align: left; }
-  .auth-field label {
-    display: block; margin: 0 2px 5px; color: var(--ink-soft);
-    font-size: 11.5px; font-weight: 650;
-  }
-  .login-card input {
-    width: 100%; border: 1px solid var(--line); border-radius: 9px;
-    padding: 11px 14px; font: 14px "Pretendard Variable", sans-serif;
-    outline: none; margin-bottom: 12px;
-  }
-  .login-card input:focus { border-color: var(--pine); }
-  .login-card .auth-submit {
-    width: 100%; background: var(--pine); color: #fff; border: none;
-    padding: 11px; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer;
-  }
-  .login-card .auth-submit:disabled { opacity: .55; cursor: wait; }
-  .login-err { color: #8C3B2E; font-size: 12.5px; margin-top: 10px; min-height: 16px; }
-  .signup-ok { color: var(--pine); }
-  .auth-note {
-    margin: -2px 2px 13px; padding: 9px 10px; border-radius: 8px;
-    background: var(--amber-soft); color: var(--amber); font-size: 11.5px;
-    line-height: 1.5; text-align: left;
-  }
-  .sr-only {
-    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
-  }
-
-  /* ---- edit ---- */
-  #editOverlay {
-    display: none; position: fixed; inset: 0; z-index: 20;
-    background: rgba(23, 33, 29, .45); align-items: center; justify-content: center;
-    padding: 20px;
-  }
-  #editOverlay.show { display: flex; }
-  .edit-dialog {
-    width: min(680px, 100%); max-height: calc(100vh - 40px); overflow-y: auto;
-    background: #fff; border: 1px solid var(--line); border-radius: 8px;
-  }
-  .edit-form { padding: 16px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .edit-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-  .edit-field.full { grid-column: 1 / -1; }
-  .edit-field label { color: var(--ink-soft); font-size: 11px; font-weight: 600; }
-  .edit-field input, .edit-field select, .edit-field textarea {
-    width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px;
-    color: var(--ink); background: #fff; font: 13px "Pretendard Variable", sans-serif;
-    outline: none;
-  }
-  .edit-field textarea { min-height: 180px; resize: vertical; }
-  .edit-field input:focus, .edit-field select:focus, .edit-field textarea:focus { border-color: var(--pine); }
-  .edit-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 18px 16px; }
-  .edit-actions button { border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
-  .edit-actions .cancel { background: #fff; color: var(--ink-soft); }
-  .edit-actions .confirm { background: var(--pine); border-color: var(--pine); color: #fff; }
-
-  /* ---- audit log ---- */
-  #auditOverlay, #accountOverlay {
-    display: none; position: fixed; inset: 0; z-index: 20;
-    background: rgba(23, 33, 29, .45); align-items: center; justify-content: center;
-    padding: 20px;
-  }
-  #auditOverlay.show, #accountOverlay.show { display: flex; }
-  .audit-dialog {
-    width: min(920px, 100%); max-height: calc(100vh - 40px); overflow: hidden;
-    background: #fff; border: 1px solid var(--line); border-radius: 8px;
-    display: flex; flex-direction: column;
-  }
-  .dialog-close {
-    border: none; background: transparent; color: var(--ink-soft); cursor: pointer;
-    font-size: 20px; line-height: 1; padding: 2px 4px;
-  }
-  .dialog-close:hover { color: var(--ink); }
-  .audit-table-wrap { overflow: auto; }
-  .audit-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  .audit-table th, .audit-table td {
-    padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left;
-    vertical-align: top;
-  }
-  .audit-table th {
-    position: sticky; top: 0; background: #F7F9F8; color: var(--ink-soft);
-    font-size: 11px; font-weight: 700;
-  }
-  .audit-table td:nth-child(1), .audit-table td:nth-child(2), .audit-table td:nth-child(3) { white-space: nowrap; }
-  .audit-table code { font: 10.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .audit-status { padding: 24px 18px; color: var(--ink-soft); font-size: 13px; text-align: center; }
-  .account-table { min-width: 560px; }
-  .account-table td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
-  .account-table td:nth-child(4) { width: 1%; white-space: nowrap; }
-  .account-balance { font-family: var(--mono); font-weight: 700; color: var(--pine); }
-  .recharge-button {
-    min-width: 66px; border: 1px solid var(--pine); background: #fff; color: var(--pine);
-    border-radius: 6px; padding: 5px 8px; font-size: 11px; font-weight: 650; cursor: pointer;
-  }
-  .recharge-button:hover { background: var(--pine-soft); }
-  .recharge-button:disabled { opacity: .55; cursor: wait; }
-
-  /* ---- chat ---- */
-  #chat {
-    display: flex; flex-direction: column;
-    height: calc(100vh - 130px); min-height: 480px;
-  }
-  #log { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
-  .msg { max-width: 82%; padding: 11px 15px; border-radius: 12px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; }
-  .msg.user { align-self: flex-end; background: var(--ink); color: #fff; border-bottom-right-radius: 4px; }
-  .msg.bot  { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
-  .answer { white-space: normal; }
-  .answer h3 { margin: 12px 0 5px; font-size: 14px; font-weight: 750; color: var(--ink); }
-  .answer h3:first-child { margin-top: 0; }
-  .answer p { margin: 0 0 6px; }
-  .answer p:last-child { margin-bottom: 0; }
-  .answer ul { margin: 2px 0 10px; padding-left: 19px; }
-  .answer li { margin: 3px 0; }
-  .answer strong { font-weight: 750; color: var(--ink); }
-  .answer.streaming::after {
-    content: ""; display: inline-block; width: 2px; height: 1em;
-    margin-left: 3px; vertical-align: -2px; background: var(--pine);
-    animation: blink .8s step-end infinite;
-  }
-  .msg.bot .srcs { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); display: flex; flex-wrap: wrap; gap: 6px; }
-  .srcs .chip { cursor: pointer; border: none; }
-  .raw {
-    display: none; margin-top: 8px; padding: 10px 12px;
-    background: #fff; border: 1px solid var(--line); border-radius: 8px;
-    font-family: var(--mono); font-size: 12px; line-height: 1.6;
-    white-space: pre-wrap; word-break: break-all; color: var(--ink);
-  }
-  .raw.open { display: block; }
-  .raw b { display: block; font-family: "Pretendard Variable", sans-serif; font-size: 11px; color: var(--ink-soft); margin-bottom: 6px; }
-  .empty { color: var(--ink-soft); font-size: 13.5px; text-align: center; margin: auto; line-height: 1.8; }
-  .ask-bar { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); }
-  .ask-bar input {
-    flex: 1; border: 1px solid var(--line); border-radius: 9px;
-    padding: 11px 14px; font: 14px "Pretendard Variable", sans-serif; outline: none;
-  }
-  .ask-bar input:focus { border-color: var(--pine); }
-  .ask-bar button {
-    background: var(--ink); color: #fff; border: none; border-radius: 9px;
-    min-width: 76px; padding: 0 20px; font-size: 14px; font-weight: 600; cursor: pointer;
-  }
-  .ask-bar button:disabled { opacity: .55; cursor: wait; }
-  .thinking { color: var(--ink-soft); font-size: 13px; align-self: flex-start; padding: 4px 2px; }
-
-  @media (max-width: 900px) {
-    main { grid-template-columns: 1fr; padding: 0 16px 24px; }
-    header { padding: 20px 16px 14px; flex-wrap: wrap; }
-    header p { order: 3; width: 100%; }
-    .session-info { margin-left: auto; }
-    #chat { height: auto; min-height: 420px; }
-  }
-  @media (max-width: 700px) {
-    .session-info { order: 4; width: 100%; margin-left: 0; justify-content: flex-start; }
-  }
-  @media (max-width: 430px) {
-    .scope-row { grid-template-columns: 1fr; gap: 6px; }
-    .approval-item { grid-template-columns: 1fr; }
-    .approval-action { min-width: 0; text-align: left; }
-    .similar-memory-actions { display: grid; grid-template-columns: 1fr 1fr; }
-  }
-  @media (prefers-reduced-motion: no-preference) {
-    .msg { animation: rise .18s ease-out; }
-    @keyframes rise { from { transform: translateY(4px); opacity: 0; } }
-    @keyframes blink { 50% { opacity: 0; } }
-  }
-
-  /* ---- aurora glass theme ---- */
-  :root {
-    color-scheme: dark;
-    --bg: #3940C9;
-    --panel: rgba(43, 50, 157, .58);
-    --ink: #FFFFFF;
-    --ink-soft: rgba(245, 248, 255, .78);
-    --ink-faint: rgba(245, 248, 255, .58);
-    --line: rgba(255, 255, 255, .25);
-    --pine: #8EEBFF;
-    --pine-soft: rgba(109, 224, 255, .16);
-    --amber: #FFE2A0;
-    --amber-soft: rgba(255, 216, 135, .16);
-    --slate: #D9E8FF;
-    --slate-soft: rgba(198, 218, 255, .16);
-    --danger: #FFD2D8;
-    --danger-soft: rgba(138, 34, 62, .28);
-    --glass: rgba(46, 52, 157, .52);
-    --glass-strong: rgba(27, 35, 125, .68);
-    --glass-soft: rgba(255, 255, 255, .075);
-    --glass-hover: rgba(255, 255, 255, .14);
-    --glass-border: rgba(255, 255, 255, .42);
-    --glass-line: rgba(255, 255, 255, .22);
-    --radius-panel: 22px;
-    --radius-control: 12px;
-    --shadow-glass: 0 26px 72px rgba(14, 22, 105, .24), inset 0 1px 0 rgba(255, 255, 255, .14);
-    --mono: "SF Mono", Consolas, "D2Coding", ui-monospace, monospace;
-  }
-
-  body {
     position: relative;
-    isolation: isolate;
-    overflow-x: hidden;
-    background:
-      radial-gradient(70rem 34rem at -5% 105%, rgba(222, 143, 190, .74), transparent 57%),
-      radial-gradient(52rem 36rem at 103% 48%, rgba(63, 220, 250, .78), transparent 62%),
-      radial-gradient(40rem 26rem at 43% 50%, rgba(117, 102, 219, .34), transparent 68%),
-      linear-gradient(118deg, #5579E5 0%, #3C3BCB 42%, #304FE0 69%, #2BBBE8 100%);
-    background-attachment: fixed;
+    box-shadow: 0 1px 0 rgba(27,38,32,0.02), 0 18px 40px -30px rgba(27,38,32,0.25);
   }
-  body::before {
-    content: "";
-    position: fixed;
-    inset: -32px;
-    z-index: 0;
-    pointer-events: none;
-    opacity: .68;
-    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, .075) 0 1px, transparent 1px 8px);
-    -webkit-mask-image: linear-gradient(90deg, #000 0 31%, transparent 46% 66%, #000 82% 100%);
-    mask-image: linear-gradient(90deg, #000 0 31%, transparent 46% 66%, #000 82% 100%);
-    will-change: transform;
-  }
-  body::after {
-    content: "";
-    position: fixed;
-    width: 34rem;
-    height: 34rem;
-    right: -12rem;
-    top: -12rem;
-    z-index: 0;
-    pointer-events: none;
-    border-radius: 50%;
-    background: rgba(189, 245, 255, .18);
-    filter: blur(42px);
-    will-change: transform;
-  }
-  body > header, body > main { position: relative; z-index: 1; }
-  .motion-pointer-glow {
-    position: fixed;
-    z-index: 0;
-    left: 0;
-    top: 0;
-    width: 28rem;
-    height: 28rem;
-    pointer-events: none;
-    border-radius: 50%;
-    contain: strict;
-    opacity: 0;
-    background: radial-gradient(circle, rgba(171, 246, 255, .22) 0, rgba(108, 179, 255, .1) 36%, transparent 70%);
-    transform: translate3d(-999px, -999px, 0);
-    transition: opacity .24s ease;
-    will-change: transform, opacity;
-  }
-  .motion-pointer-glow.is-visible { opacity: 1; }
-
-  header {
-    width: min(100%, 1344px);
-    margin: 0 auto;
-    padding: 30px 32px 20px;
-    color: var(--ink);
-  }
-  header h1 {
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    color: var(--ink);
-    font-family: var(--mono);
-    font-size: 23px;
-    font-weight: 650;
-    letter-spacing: -.035em;
-  }
-  header h1::before {
-    content: "";
-    width: 30px;
-    height: 30px;
-    flex: 0 0 auto;
-    border: 1px solid rgba(255, 255, 255, .58);
-    border-radius: 10px;
-    background:
-      linear-gradient(135deg, rgba(255, 255, 255, .32), rgba(255, 255, 255, .04)),
-      rgba(68, 75, 199, .42);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24), 0 8px 22px rgba(18, 26, 115, .18);
-  }
-  header p { color: var(--ink-soft); }
-  .session-info { color: var(--ink-soft); }
-  .session-info::before {
-    content: "\25CF  active";
-    padding: 5px 10px;
-    border: 1px solid rgba(255, 255, 255, .7);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, .94);
-    color: #3440BF;
-    font: 700 9px/1 var(--mono);
-    letter-spacing: .05em;
-  }
-  .session-user { color: var(--ink); }
-  .session-role, .usage-balance {
-    border: 1px solid var(--glass-line);
-    border-radius: 999px;
-  }
-  .session-role { background: var(--slate-soft); color: var(--slate); }
-  .usage-balance { background: var(--pine-soft); color: #DFFBFF; }
-
-  main {
-    width: min(100%, 1344px);
-    margin: 0 auto;
-    grid-template-columns: minmax(340px, 470px) minmax(0, 1fr);
-    gap: 22px;
-    padding: 0 32px 36px;
-  }
-
-  .panel,
-  .login-card,
-  .similar-memory-dialog,
-  .edit-dialog,
-  .audit-dialog {
-    color: var(--ink);
-    background: #3545B2;
-    background: linear-gradient(145deg, rgba(76, 72, 188, .58), rgba(29, 84, 183, .46));
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-panel);
-    box-shadow: var(--shadow-glass);
-    -webkit-backdrop-filter: blur(20px) saturate(135%);
-    backdrop-filter: blur(20px) saturate(135%);
-  }
-  .panel { position: relative; }
   .panel::before {
     content: "";
     position: absolute;
-    z-index: 3;
-    top: 0;
-    left: -46%;
-    width: 42%;
-    height: 1px;
-    pointer-events: none;
-    opacity: 0;
-    background: linear-gradient(90deg, transparent, rgba(215, 250, 255, .92), transparent);
-    filter: drop-shadow(0 0 7px rgba(145, 236, 255, .72));
+    top: 0; left: 0;
+    width: 40px; height: 3px;
+    background: var(--matcha);
   }
-  .panel::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    pointer-events: none;
-    border-radius: inherit;
-    background: linear-gradient(125deg, rgba(255, 255, 255, .08), transparent 36%);
-  }
+
   .panel-head {
-    min-height: 54px;
-    padding: 15px 18px;
-    border-color: var(--glass-line);
-    background: linear-gradient(90deg, rgba(255, 255, 255, .075), rgba(255, 255, 255, .025));
+    padding: 20px 22px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 14px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.35), transparent);
   }
   .panel-head b {
+    font-family: var(--serif-jp);
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--sumi);
+    line-height: 1.2;
+  }
+  .panel-head > span {
+    font-size: 11.5px;
+    color: var(--sumi-soft);
+    font-family: var(--serif-ko);
+    letter-spacing: 0.02em;
+  }
+
+  .panel-title-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: relative;
+    padding-left: 34px;
+  }
+  .panel-title-group::before {
+    content: attr(data-mark, "記");
+    position: absolute;
+    left: 0; top: 2px;
+    width: 24px; height: 24px;
+    background: var(--shu);
+    color: #fff;
+    font-family: var(--serif-jp);
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 0;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.08);
+  }
+  .panel-kicker {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.5em;
+    color: var(--matcha);
+    text-transform: uppercase;
+  }
+
+  .chat-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .chat-head-actions > span {
+    font-size: 11px;
+    color: var(--sumi-soft);
+    font-family: var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .chat-clear {
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--sumi-soft);
+    border-radius: var(--radius);
+    padding: 5px 10px;
+    font-size: 11px;
+    font-family: var(--serif-jp);
+    letter-spacing: 0.14em;
+    cursor: pointer;
+    transition: color 180ms ease, border-color 180ms ease;
+  }
+  .chat-clear:hover { color: var(--shu); border-color: var(--shu); }
+
+  /* ==========================================================================
+     INGEST · 記
+     ========================================================================== */
+  .capture-input-shell {
+    padding: 4px 4px 0;
+    position: relative;
+  }
+  .capture-toolbar {
+    display: flex;
+    justify-content: space-between;
+    padding: 14px 20px 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    color: var(--sumi-mute);
+    text-transform: uppercase;
+  }
+  .capture-mode {
+    padding: 3px 8px;
+    background: var(--matcha);
+    color: var(--washi);
+    border-radius: 1px;
+    letter-spacing: 0.25em;
+  }
+
+  textarea {
+    width: 100%;
+    border: 0;
+    resize: vertical;
+    min-height: 220px;
+    padding: 12px 20px 18px;
+    font-family: var(--serif-ko);
+    font-size: 14px;
+    line-height: 1.75;
+    color: var(--sumi);
+    background: transparent;
+    outline: none;
+  }
+  textarea::placeholder { color: var(--sumi-mute); font-style: italic; }
+
+  .scope-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+    padding: 14px 22px;
+    border-top: 1px dashed var(--line-soft);
+    background: var(--matcha-wash);
+  }
+  .scope-picker {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .scope-picker label {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    color: var(--ink);
-    font-size: 14px;
-    letter-spacing: -.01em;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    font-family: var(--serif-jp);
+    font-size: 12.5px;
+    letter-spacing: 0.14em;
+    color: var(--sumi-soft);
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: all 160ms ease;
   }
-  .panel-head b::before {
-    content: "";
-    width: 7px;
-    height: 7px;
-    flex: 0 0 auto;
-    border: 1px solid rgba(255, 255, 255, .8);
-    border-radius: 50%;
-    background: rgba(143, 237, 255, .46);
-    box-shadow: 0 0 0 4px rgba(143, 237, 255, .08), 0 0 14px rgba(143, 237, 255, .55);
+  .scope-picker label:has(input:checked) {
+    background: var(--matcha);
+    color: var(--washi);
+    border-color: var(--matcha);
   }
-  .panel-head span { color: var(--ink-soft); }
-
-  .scope-row,
-  .filters,
-  .approval-rule,
-  .date-group,
-  .auth-tabs,
-  .section-tabs,
-  .audit-table th {
-    background: var(--glass-soft);
-    border-color: var(--glass-line);
-  }
-  .scope-help, .hint, .approval-rule, .approval-meta, .approval-empty,
-  .audit-status, .empty, .thinking { color: var(--ink-soft); }
-  .scope-picker label { color: var(--ink); }
-  .scope-picker input { accent-color: #91EDFF; }
-  .ingest-foot, .ask-bar, .more-wrap, .similar-memory-intro,
-  .approval-feedback { border-color: var(--glass-line); }
-  .ingest-foot, .ask-bar { background: rgba(21, 31, 123, .09); }
-
-  textarea,
-  .login-card input,
-  .ask-bar input,
-  .filters input,
-  .filters select,
-  .edit-field input,
-  .edit-field select,
-  .edit-field textarea {
-    color: var(--ink);
-    background: rgba(16, 27, 107, .24);
-    border-color: var(--glass-line);
-    caret-color: #FFFFFF;
-  }
-  textarea { background: rgba(16, 27, 107, .10); }
-  input::placeholder, textarea::placeholder { color: var(--ink-faint); }
-  select option { color: #FFFFFF; background: #29349B; }
-  .login-card input:focus,
-  .ask-bar input:focus,
-  .filters select:focus,
-  .filters input:focus,
-  .edit-field input:focus,
-  .edit-field select:focus,
-  .edit-field textarea:focus {
-    border-color: rgba(166, 241, 255, .9);
-    box-shadow: 0 0 0 3px rgba(142, 235, 255, .13);
+  .scope-picker input { accent-color: var(--matcha); margin-right: 2px; }
+  .scope-help {
+    font-size: 11.5px;
+    color: var(--sumi-soft);
+    line-height: 1.6;
   }
 
-  .logout-button,
-  .activity-button,
-  .account-button,
-  .architecture-button,
-  .chat-clear,
-  .tag,
-  .filter-actions button,
-  .more-wrap button,
-  .approval-refresh,
-  .approval-action button,
-  .recharge-button,
-  button.clean,
-  .similar-memory-actions .cancel,
-  .edit-actions .cancel {
-    color: var(--ink-soft);
-    background: var(--glass-soft);
-    border-color: var(--glass-line);
+  .ingest-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 22px 20px;
+    background: var(--panel);
   }
-  .activity-button:hover,
-  .account-button:hover,
-  .architecture-button:hover,
-  .chat-clear:hover,
-  .tag:hover,
-  .filter-actions button:hover,
-  .more-wrap button:hover,
-  .approval-refresh:hover,
-  .approval-action button:hover,
-  .recharge-button:hover {
-    color: #FFFFFF;
-    border-color: rgba(255, 255, 255, .55);
-    background: var(--glass-hover);
+  #saveResult {
+    font-size: 12px;
+    color: var(--sumi-soft);
+    font-family: var(--serif-ko);
+    letter-spacing: 0.02em;
   }
-  .logout-button:hover, button.clean:hover {
-    color: var(--danger);
-    border-color: rgba(255, 210, 216, .55);
-    background: var(--danger-soft);
-  }
-  button.save,
-  .ask-bar button,
-  .login-card .auth-submit,
-  .similar-memory-actions .confirm,
-  .edit-actions .confirm {
-    color: #3340BD;
-    background: rgba(255, 255, 255, .95);
-    border: 1px solid rgba(255, 255, 255, .76);
-    border-radius: var(--radius-control);
-    box-shadow: 0 9px 25px rgba(20, 28, 119, .2);
-  }
-  button.save:hover,
-  .ask-bar button:hover,
-  .login-card .auth-submit:hover,
-  .similar-memory-actions .confirm:hover,
-  .edit-actions .confirm:hover {
-    background: #FFFFFF;
-    box-shadow: 0 12px 28px rgba(20, 28, 119, .26);
-    transform: translateY(-1px);
-  }
-  button.save:focus-visible, .ask-bar button:focus-visible {
-    outline-color: #FFFFFF;
-    box-shadow: 0 0 0 4px rgba(25, 32, 126, .34);
-  }
-  button:disabled { transform: none !important; }
-
   .save-ok {
-    color: #DFFFF5;
-    background: rgba(47, 168, 132, .22);
-    border: 1px solid rgba(199, 247, 229, .28);
+    color: var(--matcha);
+    font-family: var(--serif-jp);
+    letter-spacing: 0.06em;
   }
-  .save-err, .auth-note, .login-err, .approval-feedback.error { color: var(--danger); }
-  .save-err { background: var(--danger-soft); border-color: rgba(255, 210, 216, .25); }
-  .auth-note {
-    color: var(--amber);
-    background: var(--amber-soft);
-    border: 1px solid rgba(255, 226, 160, .2);
-  }
-  .signup-ok, .approval-feedback { color: #C7F7E5; }
+  .save-ok.error { color: var(--shu); }
 
-  .section-tabs { background: rgba(18, 28, 110, .08); }
-  .section-tabs button {
-    color: var(--ink-soft);
-    background: transparent;
-    border-color: var(--glass-line);
-  }
-  .section-tabs button:hover { background: rgba(255, 255, 255, .07); color: #FFFFFF; }
-  .section-tabs button.on {
-    color: #FFFFFF;
-    background: rgba(255, 255, 255, .16);
-    box-shadow: inset 0 -2px 0 rgba(143, 237, 255, .85);
-  }
-  .tag.on {
-    color: #FFFFFF;
-    background: rgba(142, 235, 255, .22);
-    border-color: rgba(177, 244, 255, .68);
-  }
-  .mem, .approval-item { border-color: var(--glass-line); }
-  .mem:hover, .approval-item:hover { background: rgba(255, 255, 255, .055); }
-  .mem .txt, .access-title, .access-row code, .access-row a,
-  .approval-content, .similar-memory-content { color: var(--ink); }
-  .mem .txt small, .access-row b, .similar-memory-meta { color: var(--ink-soft); }
-  .mem button { color: rgba(245, 248, 255, .58); }
-  .mem button:hover, .mem-actions button.edit:hover { color: #FFFFFF; }
-  .mem.expired .txt { color: var(--ink-faint); }
-  .chip, .scope-badge, .status-badge, .badge-exp { border: 1px solid transparent; }
-  .chip.slack, .scope-badge.pending, .status-badge {
-    color: #E6EFFF; background: rgba(188, 208, 255, .17); border-color: rgba(210, 225, 255, .18);
-  }
-  .chip.email, .scope-badge.personal {
-    color: #FFE9B9; background: rgba(255, 211, 121, .16); border-color: rgba(255, 226, 160, .17);
-  }
-  .chip.note, .scope-badge.shared, .mem-tags i {
-    color: #D9FFF1; background: rgba(86, 213, 168, .16); border-color: rgba(199, 247, 229, .17);
-  }
-  .scope-badge.deletion, .badge-exp {
-    color: var(--danger); background: var(--danger-soft); border-color: rgba(255, 210, 216, .18);
-  }
-  .badge-until { color: var(--ink-soft); }
-  .date-group { color: var(--ink-soft); }
-  .approval-action button { color: #DFFBFF; }
-  .mem-actions button.delete-request {
-    color: var(--danger);
-    background: var(--danger-soft);
-    border-color: rgba(255, 210, 216, .35);
-  }
-  .mem-actions button.delete-request:hover { color: #FFFFFF; background: rgba(156, 39, 67, .38); }
-
-  #loginOverlay { background: transparent; }
-  .login-card {
+  button.save {
+    background: var(--sumi);
+    color: var(--washi);
+    border: 0;
+    padding: 12px 24px;
+    font-family: var(--serif-jp);
+    font-size: 13px;
+    letter-spacing: 0.4em;
+    font-weight: 700;
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: background 180ms ease, transform 120ms ease;
     position: relative;
+  }
+  button.save::before {
+    content: "記 · ";
+    color: var(--sakura);
+    letter-spacing: 0;
+    margin-right: 4px;
+  }
+  button.save:hover { background: var(--matcha-deep); }
+  button.save:active { transform: translateY(1px); }
+  button.save:disabled { opacity: 0.55; cursor: wait; }
+  button.clean {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--sumi-soft);
+    padding: 5px 10px;
+    font-family: var(--serif-jp);
+    letter-spacing: 0.15em;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: var(--radius);
+  }
+  button.clean:hover { color: var(--shu); border-color: var(--shu); }
+
+  /* ==========================================================================
+     APPROVAL PANELS · 印
+     ========================================================================== */
+  .approval-rule {
+    padding: 12px 22px;
+    font-size: 12px;
+    color: var(--sumi-soft);
+    background: var(--kin-soft);
+    border-bottom: 1px solid var(--line-soft);
+    font-family: var(--serif-ko);
+    letter-spacing: 0.02em;
+  }
+  .approval-head-actions { display: flex; align-items: center; gap: 8px; }
+  .approval-head-actions #sharedApprovalCount,
+  .approval-head-actions #sharedDeletionApprovalCount {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    color: var(--matcha);
+    background: var(--matcha-wash);
+    padding: 2px 6px;
+    border-radius: 1px;
+  }
+  .approval-refresh {
+    background: transparent;
+    border: 1px solid var(--line);
+    width: 26px; height: 26px;
+    color: var(--sumi-soft);
+    cursor: pointer;
+    border-radius: 50%;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 400ms ease, color 180ms ease, border-color 180ms ease;
+  }
+  .approval-refresh:hover {
+    color: var(--matcha);
+    border-color: var(--matcha);
+    transform: rotate(180deg);
+  }
+  .approval-list { display: flex; flex-direction: column; }
+  .approval-item {
+    padding: 16px 22px;
+    border-bottom: 1px solid var(--line-soft);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: start;
+    transition: background 180ms ease;
+  }
+  .approval-item:hover { background: var(--matcha-wash); }
+  .approval-item:last-child { border-bottom: 0; }
+  .approval-main { min-width: 0; }
+  .approval-labels {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-bottom: 8px;
+  }
+  .approval-content {
+    font-size: 13.5px;
+    color: var(--sumi);
+    line-height: 1.7;
+    word-break: break-word;
+    font-family: var(--serif-ko);
+  }
+  .approval-meta {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--sumi-soft);
+    font-family: var(--mono);
+    letter-spacing: 0.06em;
+  }
+  .approval-action {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .approval-action button {
+    background: var(--matcha);
+    color: var(--washi);
+    border: 0;
+    padding: 7px 12px;
+    font-family: var(--serif-jp);
+    font-size: 11.5px;
+    letter-spacing: 0.2em;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 180ms ease;
+  }
+  .approval-action button:hover { background: var(--matcha-deep); }
+  .approval-action button.cancel {
+    background: transparent;
+    color: var(--sumi-soft);
+    border: 1px solid var(--line);
+  }
+  .approval-action button.cancel:hover { color: var(--shu); border-color: var(--shu); }
+  .approval-empty {
+    padding: 26px 22px;
+    color: var(--sumi-soft);
+    font-size: 13px;
+    text-align: center;
+    font-family: var(--serif-ko);
+    font-style: italic;
+  }
+  .approval-feedback {
+    padding: 0 22px;
+    font-size: 12px;
+    color: var(--sumi-soft);
+    max-height: 0;
     overflow: hidden;
-    width: min(430px, calc(100vw - 40px));
-    max-width: 100%;
-    min-width: 0;
-    padding: 58px 36px 34px;
-    text-align: left;
+    transition: max-height 220ms ease, padding 220ms ease;
   }
-  .login-card::before {
-    content: "○  ○  ○";
-    position: absolute;
-    top: 20px;
-    left: 24px;
-    color: rgba(255, 255, 255, .78);
-    font: 14px/1 var(--mono);
-    letter-spacing: 1px;
+  .approval-feedback.show {
+    max-height: 80px;
+    padding: 10px 22px 14px;
   }
-  .login-card::after {
-    content: "MEMORY AGENT";
-    position: absolute;
-    top: 18px;
-    right: 24px;
-    padding: 5px 9px;
-    border: 1px solid rgba(255, 255, 255, .35);
-    border-radius: 999px;
-    color: var(--ink-soft);
-    background: rgba(255, 255, 255, .08);
-    font: 700 9px/1 var(--mono);
-    letter-spacing: .07em;
-  }
-  .login-card h2 { color: var(--ink); font-family: var(--mono); font-size: 20px; }
-  .login-card > p { color: var(--ink-soft); }
-  .auth-tabs {
-    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
-    border: 1px solid var(--glass-line);
-  }
-  .login-card .auth-tab { color: var(--ink-soft); }
-  .login-card .auth-tab[aria-selected="true"] {
-    color: #FFFFFF;
-    background: rgba(255, 255, 255, .15);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12);
-  }
-  .auth-field label { color: var(--ink-soft); }
+  .approval-feedback.error { color: var(--shu); }
 
-  #similarMemoryOverlay,
-  #editOverlay,
-  #auditOverlay,
-  #accountOverlay {
-    background: rgba(10, 17, 75, .56);
-    -webkit-backdrop-filter: blur(9px);
-    backdrop-filter: blur(9px);
+  /* ==========================================================================
+     RECENT PANEL · 覚
+     ========================================================================== */
+  #recent .panel-head b {
+    position: relative;
+    padding-left: 34px;
   }
-  .similar-memory-dialog, .edit-dialog, .audit-dialog { overflow: hidden; }
-  .similar-memory-intro { color: var(--ink-soft); }
-  .similar-memory-item, .audit-table th, .audit-table td { border-color: var(--glass-line); }
-  .similar-memory-score { color: var(--amber); background: var(--amber-soft); }
-  .edit-field label { color: var(--ink-soft); }
-  .edit-actions button, .similar-memory-actions button { border-radius: var(--radius-control); }
-  .dialog-close { color: var(--ink-soft); }
-  .dialog-close:hover { color: #FFFFFF; }
-  .audit-table th {
-    color: var(--ink-soft);
-    background: rgba(25, 35, 126, .88);
+  #recent .panel-head b::before {
+    content: "覚";
+    position: absolute;
+    left: 0; top: 50%;
+    transform: translateY(-50%);
+    width: 24px; height: 24px;
+    background: var(--shu);
+    color: #fff;
+    font-family: var(--serif-jp);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 0;
   }
-  .audit-table td { color: var(--ink); }
-  .audit-table tbody tr:hover td { background: rgba(255, 255, 255, .055); }
-  .account-balance { color: #DFFBFF; }
+  #memCount {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.2em;
+    color: var(--sumi-mute);
+  }
 
+  .section-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 14px 22px 8px;
+    border-bottom: 1px solid var(--line-soft);
+    overflow-x: auto;
+  }
+  .section-tabs button {
+    background: transparent;
+    border: 0;
+    padding: 8px 14px 10px;
+    font-family: var(--serif-jp);
+    font-size: 13px;
+    letter-spacing: 0.15em;
+    color: var(--sumi-mute);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    white-space: nowrap;
+    transition: color 180ms ease, border-color 180ms ease;
+  }
+  .section-tabs button:hover { color: var(--sumi); }
+  .section-tabs button.on {
+    color: var(--matcha);
+    border-bottom-color: var(--matcha);
+  }
+
+  .tagbar {
+    padding: 12px 22px 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .tagbar:empty { padding: 0; }
+  .tagbar .tag {
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 4px 10px;
+    font-size: 11.5px;
+    font-family: var(--serif-ko);
+    color: var(--sumi-soft);
+    cursor: pointer;
+    border-radius: 1px;
+    transition: all 160ms ease;
+  }
+  .tagbar .tag:hover { border-color: var(--matcha); color: var(--matcha); }
+  .tagbar .tag.on {
+    background: var(--matcha);
+    color: var(--washi);
+    border-color: var(--matcha);
+  }
+
+  .filters {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr) auto;
+    gap: 8px;
+    padding: 14px 22px 0;
+    align-items: center;
+  }
+  .filters select, .filters input[type="date"] {
+    width: 100%;
+    background: var(--washi);
+    border: 1px solid var(--line);
+    padding: 7px 10px;
+    font-family: var(--serif-ko);
+    font-size: 12.5px;
+    color: var(--sumi);
+    border-radius: var(--radius);
+    outline: none;
+  }
+  .filters select:focus, .filters input[type="date"]:focus { border-color: var(--matcha); }
+  .filter-actions { grid-column: 4; }
+  .filter-actions button {
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 6px 10px;
+    font-family: var(--serif-jp);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    color: var(--sumi-soft);
+    cursor: pointer;
+    border-radius: var(--radius);
+    white-space: nowrap;
+  }
+  .filter-actions button:hover { color: var(--shu); border-color: var(--shu); }
+  .filter-dates {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  #memList { padding: 6px 22px 6px; }
+  .date-group {
+    font-family: var(--serif-jp);
+    font-size: 11px;
+    letter-spacing: 0.32em;
+    color: var(--matcha);
+    text-transform: uppercase;
+    margin: 20px 0 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px dashed var(--line-soft);
+    position: relative;
+    padding-left: 14px;
+  }
+  .date-group::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 8px;
+    width: 6px; height: 6px;
+    background: var(--sakura-deep);
+    border-radius: 50%;
+  }
+
+  .mem {
+    padding: 14px 0;
+    border-bottom: 1px dashed var(--line-soft);
+    position: relative;
+  }
+  .mem:last-child { border-bottom: 0; }
+  .mem.expired { opacity: 0.55; }
+  .mem-labels {
+    display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px;
+    align-items: center;
+  }
+  .mem .txt {
+    color: var(--sumi);
+    font-size: 13.5px;
+    line-height: 1.75;
+    font-family: var(--serif-ko);
+    word-break: break-word;
+  }
+  .mem-tags {
+    display: inline-flex; flex-wrap: wrap; gap: 4px;
+    margin-top: 6px;
+  }
+  .mem-tags i {
+    font-style: normal;
+    font-size: 10.5px;
+    padding: 2px 7px;
+    background: var(--panel-alt);
+    color: var(--sumi-soft);
+    font-family: var(--serif-ko);
+    letter-spacing: 0.04em;
+    border-radius: 1px;
+  }
+  .mem-actions {
+    display: flex; gap: 4px;
+    margin-top: 8px;
+    justify-content: flex-end;
+  }
+  .mem-actions button {
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 3px 8px;
+    font-size: 11px;
+    color: var(--sumi-soft);
+    cursor: pointer;
+    border-radius: 1px;
+    font-family: var(--serif-jp);
+    letter-spacing: 0.1em;
+    transition: color 180ms ease, border-color 180ms ease;
+  }
+  .mem-actions button.edit:hover { color: var(--matcha); border-color: var(--matcha); }
+  .mem-actions button.delete,
+  .mem-actions button.delete-request { color: var(--shu-2); }
+  .mem-actions button.delete:hover,
+  .mem-actions button.delete-request:hover { background: var(--shu-soft); border-color: var(--shu); color: var(--shu); }
+
+  /* Chips — stamped/hanko style */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    font-weight: 700;
+    text-transform: uppercase;
+    border: 1px solid var(--sumi);
+    border-radius: 1px;
+    background: var(--panel);
+    color: var(--sumi);
+  }
+  .chip.slack { background: var(--matcha-wash); color: var(--matcha-deep); border-color: var(--matcha); }
+  .chip.email { background: var(--kin-soft); color: var(--kin); border-color: var(--kin); }
+  .chip.note  { background: var(--sakura-soft); color: var(--shu); border-color: var(--sakura-deep); }
+
+  .scope-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    font-family: var(--serif-jp);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    border-radius: 1px;
+    font-weight: 700;
+  }
+  .scope-badge.personal { background: var(--panel-alt); color: var(--sumi-soft); border: 1px solid var(--line); }
+  .scope-badge.shared { background: var(--matcha); color: var(--washi); }
+
+  .badge-exp {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--shu);
+    color: #fff;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.15em;
+    border-radius: 1px;
+    text-transform: uppercase;
+  }
+  .badge-until {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--panel-alt);
+    color: var(--sumi-soft);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    border-radius: 1px;
+  }
+  .status-badge {
+    display: inline-block;
+    padding: 2px 7px;
+    background: var(--kin-soft);
+    color: var(--kin);
+    font-family: var(--serif-jp);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    border-radius: 1px;
+    font-weight: 700;
+  }
+
+  .access-details {
+    background: var(--panel-alt);
+    border: 1px dashed var(--line);
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    display: grid;
+    gap: 4px;
+    font-family: var(--serif-ko);
+    font-size: 12.5px;
+  }
+  .access-title { font-family: var(--serif-jp); font-weight: 700; letter-spacing: 0.06em; color: var(--sumi); margin-bottom: 4px; }
+  .access-row { display: flex; gap: 8px; align-items: baseline; }
+  .access-row b {
+    min-width: 44px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--matcha);
+    font-weight: 700;
+  }
+  .access-row code {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--sumi);
+    background: var(--washi);
+    padding: 1px 6px;
+    border-radius: 1px;
+  }
+
+  .more-wrap {
+    padding: 14px 22px 20px;
+    text-align: center;
+  }
+  .more-wrap button {
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 8px 22px;
+    font-family: var(--serif-jp);
+    font-size: 12px;
+    letter-spacing: 0.28em;
+    color: var(--sumi-soft);
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: all 160ms ease;
+  }
+  .more-wrap button:hover {
+    color: var(--matcha);
+    border-color: var(--matcha);
+    background: var(--matcha-wash);
+  }
+
+  .empty {
+    padding: 46px 22px;
+    text-align: center;
+    color: var(--sumi-soft);
+    font-family: var(--serif-ko);
+    font-size: 13.5px;
+    font-style: italic;
+    line-height: 1.85;
+    position: relative;
+  }
+  .empty::before {
+    content: "空";
+    display: block;
+    font-family: var(--serif-jp);
+    font-size: 42px;
+    color: var(--line);
+    margin-bottom: 6px;
+    font-style: normal;
+  }
+
+  /* ==========================================================================
+     CHAT · 問 (dialogue)
+     ========================================================================== */
+  #chat {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - 220px);
+    position: sticky;
+    top: 22px;
+  }
+  #chat .panel-title-group::before { content: ""; display: none; }
+  #chat .panel-head b {
+    position: relative;
+    padding-left: 34px;
+  }
+  #chat .panel-head b::before {
+    content: "問";
+    position: absolute;
+    left: 0; top: 50%;
+    transform: translateY(-50%);
+    width: 24px; height: 24px;
+    background: var(--shu);
+    color: #fff;
+    font-family: var(--serif-jp);
+    font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+  }
   #log {
-    background: linear-gradient(180deg, rgba(20, 29, 118, .08), rgba(255, 255, 255, .025));
+    flex: 1;
+    padding: 20px 22px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    background:
+      linear-gradient(180deg, var(--panel) 0%, var(--panel) 100%);
+  }
+  #log .empty {
+    margin: auto;
+    padding: 60px 20px;
+  }
+  .msg {
+    max-width: 92%;
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    font-family: var(--serif-ko);
+    font-size: 13.5px;
+    line-height: 1.75;
+    color: var(--sumi);
+    word-break: break-word;
+    position: relative;
   }
   .msg.user {
-    color: #2F3BB4;
-    background: rgba(255, 255, 255, .95);
-    box-shadow: 0 10px 26px rgba(17, 25, 112, .18);
+    align-self: flex-end;
+    background: var(--matcha);
+    color: var(--washi);
+    border-top-right-radius: 0;
   }
-  .msg.bot, .raw {
-    color: var(--ink);
-    background: rgba(15, 25, 103, .25);
-    border-color: var(--glass-line);
+  .msg.bot {
+    align-self: flex-start;
+    background: var(--washi-2);
+    border: 1px solid var(--line-soft);
+    border-top-left-radius: 0;
   }
-  .answer h3, .answer strong, .raw, .access-row a:hover { color: var(--ink); }
-  .msg.bot .srcs { border-color: var(--glass-line); }
-  .raw b { color: var(--ink-soft); }
-  .answer.streaming::after { background: #B8F4FF; }
+  .msg.bot::before {
+    content: "答";
+    position: absolute;
+    top: -8px; left: -8px;
+    width: 20px; height: 20px;
+    background: var(--shu);
+    color: #fff;
+    font-family: var(--serif-jp);
+    font-size: 11px;
+    display: flex; align-items: center; justify-content: center;
+    letter-spacing: 0;
+  }
+  .answer p { margin: 6px 0; }
+  .answer p:first-child { margin-top: 0; }
+  .answer p:last-child { margin-bottom: 0; }
+  .answer strong { font-family: var(--serif-jp); color: var(--matcha-deep); }
+  .answer em { color: var(--sumi-2); }
+  .answer ul, .answer ol { padding-left: 20px; margin: 6px 0; }
+  .answer code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--washi);
+    padding: 1px 5px;
+    border-radius: 1px;
+  }
+  .answer.streaming::after {
+    content: "…";
+    animation: dots 1.4s infinite steps(3);
+    margin-left: 2px;
+    color: var(--matcha);
+  }
+  @keyframes dots {
+    0%, 33%   { opacity: 0.3; }
+    50%       { opacity: 1; }
+    100%      { opacity: 0.3; }
+  }
+  .srcs {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line-soft);
+  }
+  .srcs .chip {
+    background: transparent;
+    color: var(--sumi-soft);
+    border-color: var(--line);
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .srcs .chip:hover { border-color: var(--matcha); color: var(--matcha); }
+  .raw {
+    display: none;
+    grid-column: 1 / -1;
+    margin-top: 6px;
+    padding: 10px 12px;
+    background: var(--washi);
+    border-left: 2px solid var(--matcha);
+    font-family: var(--serif-ko);
+    font-size: 12px;
+    line-height: 1.65;
+    color: var(--sumi-2);
+    white-space: pre-wrap;
+  }
+  .raw.open { display: block; }
+  .raw b {
+    display: block;
+    font-family: var(--serif-jp);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    color: var(--matcha);
+    margin-bottom: 4px;
+  }
 
-  button, a, input, textarea, select { transition: border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease; }
-  button:focus-visible,
-  a:focus-visible,
-  input:focus-visible,
-  textarea:focus-visible,
-  select:focus-visible {
-    outline: 2px solid #FFFFFF;
-    outline-offset: 3px;
-    box-shadow: 0 0 0 5px rgba(27, 35, 125, .42);
+  .ask-bar {
+    border-top: 1px solid var(--line-soft);
+    background: var(--panel);
+    padding: 14px 22px 18px;
   }
-  * { scrollbar-color: rgba(255, 255, 255, .35) rgba(18, 28, 110, .14); }
+  .composer-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .composer-meta label {
+    font-family: var(--serif-jp);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    color: var(--sumi);
+  }
+  .composer-meta span {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    color: var(--sumi-mute);
+  }
+  .composer-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+  }
+  #askBox {
+    background: var(--washi);
+    border: 1px solid var(--line);
+    padding: 12px 14px;
+    font-family: var(--serif-ko);
+    font-size: 14px;
+    color: var(--sumi);
+    outline: none;
+    border-radius: var(--radius);
+    transition: border-color 180ms ease;
+  }
+  #askBox:focus { border-color: var(--matcha); }
+  #askBox::placeholder { color: var(--sumi-mute); font-style: italic; }
+  #askBtn {
+    background: var(--sumi);
+    color: var(--washi);
+    border: 0;
+    padding: 12px 22px;
+    font-family: var(--serif-jp);
+    font-size: 13px;
+    letter-spacing: 0.4em;
+    font-weight: 700;
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: background 180ms ease;
+  }
+  #askBtn:hover { background: var(--matcha-deep); }
+  #askBtn:disabled { opacity: 0.55; cursor: wait; }
 
-  @media (max-width: 900px) {
-    header { padding: 22px 16px 16px; }
-    main { grid-template-columns: 1fr; padding: 0 16px 26px; }
-    .panel, .login-card, .similar-memory-dialog, .edit-dialog, .audit-dialog {
-      -webkit-backdrop-filter: blur(15px) saturate(125%);
-      backdrop-filter: blur(15px) saturate(125%);
-    }
+  .recharge-button {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 8px 14px;
+    background: var(--shu);
+    color: #fff;
+    border: 0;
+    font-family: var(--serif-jp);
+    font-size: 12px;
+    letter-spacing: 0.2em;
+    cursor: pointer;
+    border-radius: var(--radius);
   }
-  @media (max-width: 430px) {
-    header { gap: 10px; padding-inline: 12px; }
-    header h1 { font-size: 20px; }
-    header h1::before { width: 27px; height: 27px; }
-    main { padding-inline: 12px; }
-    .panel, .login-card, .similar-memory-dialog, .edit-dialog, .audit-dialog { border-radius: 17px; }
-    .login-card { padding: 56px 22px 26px; }
-    .panel-head { align-items: flex-start; gap: 7px; flex-wrap: wrap; }
-    .panel-head > span, .chat-head-actions { max-width: 100%; }
-    .ask-bar { gap: 8px; padding-inline: 12px; }
-    .ask-bar button { min-width: 66px; padding-inline: 14px; }
-    button.save, .ask-bar button, .login-card .auth-submit { min-height: 44px; }
+  .recharge-button:hover { background: var(--shu-2); }
+
+  /* ==========================================================================
+     DIALOGS · 障子 (shoji screens)
+     ========================================================================== */
+  #similarMemoryOverlay, #editOverlay, #auditOverlay, #accountOverlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(27, 38, 32, 0.42);
+    backdrop-filter: blur(3px);
+    z-index: 300;
   }
-  @media (prefers-reduced-motion: no-preference) {
-    body::before { animation: pattern-drift 38s linear infinite alternate; }
-    body::after { animation: aurora-drift 18s ease-in-out infinite alternate; }
-    #loginOverlay.show > .login-card {
-      animation:
-        dialog-enter .46s cubic-bezier(.22, 1, .36, 1) both,
-        dialog-breathe 6.5s ease-in-out .5s infinite;
-    }
-    body > header:not([aria-hidden]) { animation: header-enter .4s cubic-bezier(.22, 1, .36, 1); }
-    #similarMemoryOverlay.show,
-    #editOverlay.show,
-    #auditOverlay.show,
-    #accountOverlay.show { animation: overlay-enter .18s ease-out; }
-    #similarMemoryOverlay.show > *,
-    #editOverlay.show > *,
-    #auditOverlay.show > *,
-    #accountOverlay.show > * { animation: dialog-enter .32s cubic-bezier(.22, 1, .36, 1); }
-    .session-info.show::before { animation: status-pulse 2.8s ease-in-out infinite; }
-    @keyframes aurora-drift {
-      from { transform: translate3d(0, 0, 0) scale(1); }
-      to { transform: translate3d(-24px, 18px, 0) scale(1.06); }
-    }
-    @keyframes pattern-drift {
-      from { transform: translate3d(-18px, -10px, 0); }
-      to { transform: translate3d(18px, 10px, 0); }
-    }
-    @keyframes header-enter {
-      from { opacity: 0; transform: translateY(-8px); }
-    }
-    @keyframes overlay-enter { from { opacity: 0; } }
-    @keyframes dialog-enter {
-      from { opacity: 0; transform: translateY(12px) scale(.985); }
-      to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    @keyframes dialog-breathe {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-3px); }
-    }
-    @keyframes panel-enter {
-      from { opacity: 0; transform: translateY(12px) scale(.992); }
-      to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    @keyframes border-scan {
-      from { transform: translate3d(0, 0, 0); }
-      to { transform: translate3d(390%, 0, 0); }
-    }
-    @keyframes status-pulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(159, 240, 255, 0); }
-      50% { box-shadow: 0 0 0 5px rgba(159, 240, 255, .12); }
-    }
+  #similarMemoryOverlay.show, #editOverlay.show, #auditOverlay.show, #accountOverlay.show {
+    display: flex;
   }
-  @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
-    .panel { transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; }
-    body > main:not([aria-hidden]) .panel:hover {
-      transform: translateY(-3px);
-      border-color: rgba(255, 255, 255, .55);
-      box-shadow: 0 31px 82px rgba(13, 21, 103, .3), inset 0 1px 0 rgba(255, 255, 255, .18);
-    }
-    .panel:hover::before, .panel:focus-within::before {
-      opacity: 1;
-      animation: border-scan 1.15s cubic-bezier(.2, .8, .2, 1) 1;
-    }
-    .mem { transition: background-color .18s ease, transform .18s ease; }
-    .mem:hover { transform: translateX(3px); }
-    button:not(:disabled):active, .tag:active { transform: scale(.98); }
+
+  .similar-memory-dialog, .edit-dialog, .audit-dialog {
+    width: min(680px, 100%);
+    max-height: 90vh;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-top: 3px solid var(--matcha);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: var(--shadow-ink);
+    border-radius: var(--radius);
+    position: relative;
   }
+  .audit-dialog { width: min(900px, 100%); }
+
+  .dialog-close {
+    background: transparent;
+    border: 0;
+    font-size: 20px;
+    color: var(--sumi-soft);
+    cursor: pointer;
+    line-height: 1;
+    padding: 4px 6px;
+  }
+  .dialog-close:hover { color: var(--shu); }
+
+  .similar-memory-intro {
+    padding: 14px 22px;
+    color: var(--sumi-soft);
+    font-size: 12.5px;
+    font-family: var(--serif-ko);
+    line-height: 1.7;
+    background: var(--sakura-soft);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .similar-memory-list { overflow-y: auto; }
+  .similar-memory-item {
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .similar-memory-labels {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-bottom: 8px;
+    align-items: center;
+  }
+  .similar-memory-score {
+    padding: 2px 7px;
+    background: var(--kin-soft);
+    color: var(--kin);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    border-radius: 1px;
+    font-weight: 700;
+  }
+  .similar-memory-content {
+    color: var(--sumi);
+    font-size: 13px;
+    line-height: 1.7;
+    font-family: var(--serif-ko);
+  }
+  .similar-memory-meta {
+    margin-top: 6px;
+    color: var(--sumi-soft);
+    font-size: 11px;
+    font-family: var(--mono);
+    letter-spacing: 0.06em;
+  }
+  .similar-memory-actions {
+    display: flex;
+    gap: 10px;
+    padding: 16px 22px;
+    justify-content: flex-end;
+    border-top: 1px solid var(--line-soft);
+    background: var(--panel);
+  }
+  .similar-memory-actions button, .edit-actions button {
+    padding: 10px 22px;
+    font-family: var(--serif-jp);
+    font-size: 12.5px;
+    letter-spacing: 0.28em;
+    border: 0;
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: background 180ms ease;
+  }
+  .similar-memory-actions .cancel, .edit-actions .cancel {
+    background: transparent;
+    color: var(--sumi-soft);
+    border: 1px solid var(--line);
+  }
+  .similar-memory-actions .cancel:hover, .edit-actions .cancel:hover {
+    color: var(--sumi); border-color: var(--sumi);
+  }
+  .similar-memory-actions .confirm, .edit-actions .confirm {
+    background: var(--sumi);
+    color: var(--washi);
+  }
+  .similar-memory-actions .confirm:hover, .edit-actions .confirm:hover { background: var(--matcha-deep); }
+  .similar-memory-actions button:disabled, .edit-actions button:disabled { opacity: 0.55; cursor: wait; }
+
+  .edit-form {
+    padding: 20px 22px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    overflow-y: auto;
+  }
+  .edit-field { display: flex; flex-direction: column; gap: 6px; }
+  .edit-field.full { grid-column: 1 / -1; }
+  .edit-field label {
+    font-family: var(--serif-jp);
+    font-size: 11.5px;
+    letter-spacing: 0.24em;
+    color: var(--matcha);
+    font-weight: 500;
+  }
+  .edit-field input, .edit-field select, .edit-field textarea {
+    background: var(--washi);
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+    font-family: var(--serif-ko);
+    font-size: 13px;
+    color: var(--sumi);
+    border-radius: var(--radius);
+    outline: none;
+  }
+  .edit-field textarea { min-height: 140px; resize: vertical; }
+  .edit-field input:focus, .edit-field select:focus, .edit-field textarea:focus { border-color: var(--matcha); }
+  .edit-actions {
+    display: flex;
+    gap: 10px;
+    padding: 16px 22px;
+    justify-content: flex-end;
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .audit-table-wrap {
+    overflow-y: auto;
+    padding: 0 22px 20px;
+  }
+  .audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    font-family: var(--serif-ko);
+  }
+  .audit-table th, .audit-table td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  .audit-table th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--matcha);
+    background: var(--matcha-wash);
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+  }
+  .audit-status {
+    padding: 12px 4px;
+    font-size: 12px;
+    color: var(--sumi-soft);
+    text-align: center;
+    font-family: var(--serif-ko);
+    font-style: italic;
+  }
+
+  /* ==========================================================================
+     RESPONSIVE
+     ========================================================================== */
+  @media (max-width: 1024px) {
+    main { grid-template-columns: 1fr; }
+    #chat { position: static; min-height: 520px; }
+    #loginOverlay::before, #loginOverlay::after { display: none; }
+  }
+  @media (max-width: 640px) {
+    header {
+      flex-wrap: wrap;
+      padding: 22px 20px 16px;
+    }
+    header::after { left: 20px; right: 20px; }
+    header h1 { font-size: 20px; padding-left: 44px; }
+    header h1::before { width: 34px; height: 34px; font-size: 16px; }
+    header h1::after { display: none; }
+    header > p { display: none; }
+    .session-info { width: 100%; }
+    main { padding: 16px 20px 40px; gap: 18px; }
+    .panel-head { padding: 16px 16px 12px; }
+    .capture-toolbar, textarea, .scope-row, .ingest-foot { padding-left: 16px; padding-right: 16px; }
+    .filters { grid-template-columns: 1fr 1fr; padding-left: 16px; padding-right: 16px; }
+    .filter-actions { grid-column: 1 / -1; }
+    #memList { padding-left: 16px; padding-right: 16px; }
+    .approval-rule, .approval-item { padding-left: 16px; padding-right: 16px; }
+    .approval-item { grid-template-columns: 1fr; }
+    .login-card { padding: 48px 26px 32px; }
+    .login-card h2 { font-size: 24px; }
+    .similar-memory-actions, .edit-actions { flex-direction: column-reverse; }
+    .similar-memory-actions button, .edit-actions button { width: 100%; }
+    .edit-form { grid-template-columns: 1fr; }
+    #log, .ask-bar { padding-left: 16px; padding-right: 16px; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    button, a, input, textarea, select { transition: none; }
-    .motion-pointer-glow, .panel::before { display: none; }
-    .mem:hover, button:hover, button:active { transform: none !important; }
-    .answer.streaming::after { animation: none; }
+    * { transition: none !important; animation: none !important; }
+    .approval-refresh:hover { transform: none; }
+    #sakuraCanvas { display: none; }
   }
-  @media (max-width: 900px), (pointer: coarse) {
-    body { background-attachment: scroll; }
-    .motion-pointer-glow { display: none; }
-  }
+
   @media (forced-colors: active) {
-    body, #loginOverlay { background: Canvas; color: CanvasText; }
-    body::before, body::after, .motion-pointer-glow, .panel::before, .panel::after { display: none; }
-    .panel, .login-card, .similar-memory-dialog, .edit-dialog, .audit-dialog,
-    .msg.bot, .msg.user, .raw {
-      color: CanvasText;
-      background: Canvas;
+    .panel, .login-card, .similar-memory-dialog, .edit-dialog, .audit-dialog {
       border: 1px solid CanvasText;
-      box-shadow: none;
     }
-    button.save, .ask-bar button, .login-card .auth-submit,
+    .auth-submit, button.save, #askBtn,
     .similar-memory-actions .confirm, .edit-actions .confirm {
       color: ButtonText;
       background: ButtonFace;
@@ -1121,10 +1640,16 @@
 </head>
 <body>
 
+<canvas id="sakuraCanvas" aria-hidden="true"></canvas>
+
+
 <div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
   <section class="login-card">
-    <h2 id="loginTitle">기억 서랍</h2>
-    <p>내 기억과 모두의 기억을 안전하게 사용하세요</p>
+    <h2 id="loginTitle">
+      <img class="brand-mark brand-mark-login" src="/static/gungum-tapa-mark.png" alt="" aria-hidden="true" width="44" height="44">
+      <span>궁금타파</span>
+    </h2>
+    <p>흩어진 기억을 모아, 필요한 답을 바로 찾아보세요</p>
     <div class="auth-tabs" role="tablist" aria-label="계정 메뉴">
       <button class="auth-tab" type="button" id="loginTab" role="tab" aria-controls="loginForm" aria-selected="true">로그인</button>
       <button class="auth-tab" type="button" id="signupTab" role="tab" aria-controls="signupForm" aria-selected="false" tabindex="-1" hidden>회원가입</button>
@@ -1170,7 +1695,10 @@
 </div>
 
 <header inert aria-hidden="true">
-  <h1>기억 서랍</h1>
+  <h1>
+    <img class="brand-mark brand-mark-header" src="/static/gungum-tapa-mark.png" alt="" aria-hidden="true" width="34" height="34">
+    <span>궁금타파</span>
+  </h1>
   <p>Slack·메일·메모를 붙여넣어 저장하고, 나중에 물어보세요</p>
   <div class="session-info" id="sessionInfo" aria-label="현재 로그인 정보">
     <span class="session-user" id="sessionUser"></span>
@@ -1185,9 +1713,16 @@
 
 <main inert aria-hidden="true">
   <section>
-    <div class="panel role-hidden" id="ingestPanel">
-      <div class="panel-head"><b>넣기</b><span>붙여넣으면 자동으로 분류·저장돼요</span></div>
-      <textarea id="pasteBox" placeholder="업무 가이드, 일정, 메일 또는 메모를 여기에 붙여넣기&#10;&#10;예) 식대에서 법인카드 사용 방식&#10;- 인당 월 8만원 한도 내에서 사용&#10;- 4만원: 개인 식사 시 사용(가급적 파트 구성원과 함께 사용)&#10;- 4만원: 월 1회 파트 점심 또는 저녁식사 시 사용&#10;- 사용 후 적요에 [AI Talent] 내용을 입력해 정산&#10;  예: [AI Talent] 파트 점심식사"></textarea>
+    <div class="panel role-hidden" id="ingestPanel" aria-labelledby="ingestTitle">
+      <div class="panel-head">
+        <div class="panel-title-group"><span class="panel-kicker">CAPTURE</span><b id="ingestTitle">기억 저장</b></div>
+        <span>붙여넣으면 자동으로 분류·저장돼요</span>
+      </div>
+      <div class="capture-input-shell">
+        <div class="capture-toolbar" aria-hidden="true"><span class="capture-mode">RAW NOTE</span><span>AUTO CLASSIFY</span></div>
+        <label class="sr-only" for="pasteBox">저장할 기억 입력</label>
+        <textarea id="pasteBox" placeholder="업무 가이드, 일정, 메일 또는 메모를 여기에 붙여넣기&#10;&#10;예) 식대에서 법인카드 사용 방식&#10;- 인당 월 8만원 한도 내에서 사용&#10;- 4만원: 개인 식사 시 사용(가급적 파트 구성원과 함께 사용)&#10;- 4만원: 월 1회 파트 점심 또는 저녁식사 시 사용&#10;- 사용 후 적요에 [AI Talent] 내용을 입력해 정산&#10;  예: [AI Talent] 파트 점심식사"></textarea>
+      </div>
       <div id="saveResult" role="status" aria-live="polite"></div>
       <div class="scope-row">
         <fieldset class="scope-picker" aria-describedby="memoryScopeHelp">
@@ -1267,14 +1802,20 @@
     </div>
   </section>
 
-  <section class="panel" id="chat">
-    <div class="panel-head"><b>묻기</b><div class="chat-head-actions"><span>저장된 내용에서만 답해요</span><button class="chat-clear" onclick="clearChat()">대화 지우기</button></div></div>
+  <section class="panel" id="chat" aria-labelledby="chatTitle">
+    <div class="panel-head">
+      <div class="panel-title-group"><span class="panel-kicker">DIALOGUE</span><b id="chatTitle">기억과 대화</b></div>
+      <div class="chat-head-actions"><span>저장된 내용에서만 답해요</span><button class="chat-clear" onclick="clearChat()">대화 지우기</button></div>
+    </div>
     <div id="log" aria-live="polite">
-      <div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>
+      <div class="empty">아직 대화가 없어요.<br>궁금한 내용을 입력하면 저장된 기억에서 답을 찾아드려요.</div>
     </div>
     <div class="ask-bar">
-      <input id="askBox" placeholder="예: 식대에서 법인카드는 어떻게 사용하고 정산하면 돼?" onkeydown="if(event.key==='Enter')ask()">
-      <button id="askBtn" onclick="ask()">질문</button>
+      <div class="composer-meta"><label for="askBox">무엇이 궁금한가요?</label><span>ENTER TO SEND</span></div>
+      <div class="composer-row">
+        <input id="askBox" placeholder="예: 식대에서 법인카드는 어떻게 사용하고 정산하면 돼?" onkeydown="if(event.key==='Enter')ask()">
+        <button id="askBtn" onclick="ask()">질문</button>
+      </div>
     </div>
   </section>
 </main>
@@ -2823,7 +3364,7 @@ function renderChatHistory() {
 function resetChatView() {
   const empty = document.createElement('div');
   empty.className = 'empty';
-  empty.textContent = '아직 대화가 없어요. 저장한 내용에 대해 무엇이든 물어보세요.';
+  empty.textContent = '아직 대화가 없어요. 궁금한 내용을 입력하면 저장된 기억에서 답을 찾아드려요.';
   $('log').replaceChildren(empty);
 }
 
@@ -2831,7 +3372,7 @@ function clearChat() {
   if (!chatHistory.length || confirm("대화 이력을 모두 지울까요?")) {
     chatHistory = [];
     removeChatHistory();
-    $("log").innerHTML = `<div class="empty">아직 대화가 없어요.<br>왼쪽에 저장한 내용에 대해 무엇이든 물어보세요.</div>`;
+    $("log").innerHTML = `<div class="empty">아직 대화가 없어요.<br>궁금한 내용을 입력하면 저장된 기억에서 답을 찾아드려요.</div>`;
   }
 }
 
@@ -3302,5 +3843,100 @@ async function init() {
 setupMotionEffects();
 init();
 </script>
+
+<script>
+/* 桜吹雪 · Sakura petal drift — signature ambient motion */
+(function(){
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce) return;
+  var canvas = document.getElementById("sakuraCanvas");
+  if (!canvas) return;
+  var ctx = canvas.getContext("2d");
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var petals = [];
+  var W = 0, H = 0;
+  var running = true;
+
+  function resize(){
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function makePetal(seed){
+    var side = Math.random() < 0.5 ? -30 : W + 30;
+    return {
+      x: seed ? Math.random() * W : side,
+      y: seed ? Math.random() * H : -30 - Math.random() * H * 0.5,
+      s: 6 + Math.random() * 9,           // size
+      vy: 0.4 + Math.random() * 0.9,      // vertical speed
+      vx: -0.4 + Math.random() * 0.8,     // horizontal drift baseline
+      sway: 0.5 + Math.random() * 1.2,    // sway amplitude
+      swayS: 0.005 + Math.random() * 0.01,// sway frequency
+      rot: Math.random() * Math.PI * 2,
+      vrot: -0.02 + Math.random() * 0.04,
+      hue: Math.random() < 0.25 ? "#F7E4E9" : (Math.random() < 0.55 ? "#E9B7C4" : "#D98CA6"),
+      op: 0.55 + Math.random() * 0.35,
+      t: Math.random() * 1000
+    };
+  }
+
+  var count = Math.min(38, Math.round(W / 46));
+  for (var i = 0; i < count; i++) petals.push(makePetal(true));
+
+  function drawPetal(p){
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.globalAlpha = p.op;
+    ctx.fillStyle = p.hue;
+    // Petal shape: two arcs meeting at points, notch on top
+    var s = p.s;
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.bezierCurveTo(s*0.85, -s*0.9, s*0.9, s*0.6, 0, s);
+    ctx.bezierCurveTo(-s*0.9, s*0.6, -s*0.85, -s*0.9, 0, -s);
+    ctx.fill();
+    // Notch/vein
+    ctx.strokeStyle = "rgba(217, 140, 166, 0.45)";
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(0, -s*0.9);
+    ctx.lineTo(0, s*0.9);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function step(){
+    if (!running) return;
+    ctx.clearRect(0, 0, W, H);
+    for (var i = 0; i < petals.length; i++){
+      var p = petals[i];
+      p.t += 1;
+      p.x += p.vx + Math.sin(p.t * p.swayS) * p.sway;
+      p.y += p.vy;
+      p.rot += p.vrot;
+      if (p.y - p.s > H || p.x < -60 || p.x > W + 60){
+        petals[i] = makePetal(false);
+      }
+      drawPetal(p);
+    }
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+
+  document.addEventListener("visibilitychange", function(){
+    running = !document.hidden;
+    if (running) requestAnimationFrame(step);
+  });
+})();
+</script>
+
 </body>
 </html>
