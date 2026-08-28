@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import httpx
 import supabase
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -21,6 +22,11 @@ os.environ["SUPABASE_URL"] = "https://example.supabase.co"
 os.environ["SUPABASE_SERVICE_KEY"] = "test-service-key"
 os.environ["SUPABASE_PUBLISHABLE_KEY"] = "test-publishable-key"
 os.environ["OPENAI_API_KEY"] = "sk-test"
+os.environ["AI_TALENT_API_KEY"] = ""
+os.environ["AI_TALENT_ENDPOINT"] = ""
+os.environ["AI_TALENT_API_VERSION"] = "2024-12-01-preview"
+os.environ["CHAT_MODEL"] = "gpt-4o-mini"
+os.environ["EMBED_MODEL"] = "text-embedding-3-small"
 os.environ["APP_ENV"] = "development"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -29,6 +35,18 @@ import main  # noqa: E402
 
 ALICE_ID = "11111111-1111-4111-8111-111111111111"
 BOB_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def test_chat_model_uses_best_ai_talent_model_when_gateway_is_configured():
+    assert main.resolve_chat_model(
+        "https://skax.ai-talentlab.com",
+        "gpt-4o-mini",
+    ) == "gpt-5.4"
+
+
+def test_chat_model_preserves_direct_openai_fallback_without_gateway():
+    assert main.resolve_chat_model("", "gpt-4o-mini") == "gpt-4o-mini"
+    assert main.CHAT_MODEL == "gpt-4o-mini"
 
 
 def _user(user_id=ALICE_ID, *, role="editor", email=None):
@@ -86,6 +104,304 @@ def _assert_private_no_store(response, *, no_transform=False):
     }
     assert {"private", "no-store"} <= directives
     assert ("no-transform" in directives) is no_transform
+
+
+def test_create_ai_client_prefers_ai_talent_gateway(monkeypatch):
+    captured = {}
+    expected_client = object()
+
+    def fake_azure_openai(**kwargs):
+        captured.update(kwargs)
+        return expected_client
+
+    monkeypatch.setattr(main, "AzureOpenAI", fake_azure_openai)
+
+    client = main.create_ai_client(
+        openai_api_key="direct-test-key",
+        ai_talent_api_key="gateway-test-key",
+        ai_talent_endpoint="https://skax.ai-talentlab.com",
+        ai_talent_api_version="2024-12-01-preview",
+    )
+
+    assert client is expected_client
+    assert captured == {
+        "api_key": "gateway-test-key",
+        "azure_endpoint": "https://skax.ai-talentlab.com",
+        "api_version": "2024-12-01-preview",
+        "timeout": 30.0,
+        "max_retries": 2,
+    }
+
+
+def test_create_ai_client_keeps_direct_openai_fallback(monkeypatch):
+    captured = {}
+    expected_client = object()
+
+    def fake_openai(**kwargs):
+        captured.update(kwargs)
+        return expected_client
+
+    monkeypatch.setattr(main, "OpenAI", fake_openai)
+
+    client = main.create_ai_client(
+        openai_api_key="direct-test-key",
+        ai_talent_api_key="",
+        ai_talent_endpoint="",
+        ai_talent_api_version="2024-12-01-preview",
+    )
+
+    assert client is expected_client
+    assert captured == {
+        "api_key": "direct-test-key",
+        "timeout": 30.0,
+        "max_retries": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("gateway_key", "gateway_endpoint"),
+    [
+        ("gateway-test-key", ""),
+        ("", "https://skax.ai-talentlab.com"),
+    ],
+)
+def test_create_ai_client_rejects_partial_gateway_config(
+    gateway_key,
+    gateway_endpoint,
+):
+    with pytest.raises(RuntimeError, match="함께 설정"):
+        main.create_ai_client(
+            openai_api_key="direct-test-key",
+            ai_talent_api_key=gateway_key,
+            ai_talent_endpoint=gateway_endpoint,
+            ai_talent_api_version="2024-12-01-preview",
+        )
+
+
+def test_create_ai_client_rejects_missing_gateway_version():
+    with pytest.raises(RuntimeError, match="AI_TALENT_API_VERSION"):
+        main.create_ai_client(
+            openai_api_key="",
+            ai_talent_api_key="gateway-test-key",
+            ai_talent_endpoint="https://skax.ai-talentlab.com",
+            ai_talent_api_version="",
+        )
+
+
+def test_create_ai_client_rejects_missing_all_credentials():
+    with pytest.raises(RuntimeError, match="API_KEY"):
+        main.create_ai_client(
+            openai_api_key="",
+            ai_talent_api_key="",
+            ai_talent_endpoint="",
+            ai_talent_api_version="2024-12-01-preview",
+        )
+
+
+def test_azure_sdk_serializes_deployment_path_and_gpt5_limit():
+    requests = []
+
+    def handle_request(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-5.4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as http_client:
+        with main.AzureOpenAI(
+            api_key="gateway-test-key",
+            azure_endpoint="https://skax.ai-talentlab.com",
+            api_version="2024-12-01-preview",
+            http_client=http_client,
+        ) as client:
+            response = client.chat.completions.create(
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "안녕"}],
+                max_completion_tokens=32,
+            )
+
+    assert response.choices[0].message.content == "ok"
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.path == (
+        "/openai/deployments/gpt-5.4/chat/completions"
+    )
+    assert request.url.params["api-version"] == "2024-12-01-preview"
+    assert request.headers["api-key"] == "gateway-test-key"
+    assert json.loads(request.content)["max_completion_tokens"] == 32
+
+
+def test_azure_sdk_serializes_embedding_deployment_and_dimensions():
+    requests = []
+
+    def handle_request(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "object": "list",
+                "data": [{
+                    "object": "embedding",
+                    "index": 0,
+                    "embedding": [0.1, 0.2],
+                }],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 1, "total_tokens": 1},
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as http_client:
+        with main.AzureOpenAI(
+            api_key="gateway-test-key",
+            azure_endpoint="https://skax.ai-talentlab.com",
+            api_version="2024-12-01-preview",
+            http_client=http_client,
+        ) as client:
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=["기억"],
+                dimensions=1536,
+            )
+
+    assert response.data[0].embedding == [0.1, 0.2]
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.path == (
+        "/openai/deployments/text-embedding-3-small/embeddings"
+    )
+    assert request.url.params["api-version"] == "2024-12-01-preview"
+    assert request.headers["api-key"] == "gateway-test-key"
+    assert json.loads(request.content)["dimensions"] == 1536
+
+
+def test_azure_sdk_parses_streaming_chat_response():
+    requests = []
+
+    def handle_request(request):
+        requests.append(request)
+        body = (
+            'data: {"id":"chatcmpl-test","object":"chat.completion.chunk",'
+            '"created":0,"model":"gpt-5.4","choices":[{"index":0,'
+            '"delta":{"content":"안녕"},"finish_reason":null}]}\n\n'
+            'data: {"id":"chatcmpl-test","object":"chat.completion.chunk",'
+            '"created":0,"model":"gpt-5.4","choices":[{"index":0,'
+            '"delta":{},"finish_reason":"stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content=body.encode("utf-8"),
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle_request)) as http_client:
+        with main.AzureOpenAI(
+            api_key="gateway-test-key",
+            azure_endpoint="https://skax.ai-talentlab.com",
+            api_version="2024-12-01-preview",
+            http_client=http_client,
+        ) as client:
+            chunks = list(client.chat.completions.create(
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "안녕"}],
+                max_completion_tokens=32,
+                stream=True,
+            ))
+
+    content = "".join(
+        choice.delta.content or ""
+        for chunk in chunks
+        for choice in chunk.choices
+    )
+    assert content == "안녕"
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.path == (
+        "/openai/deployments/gpt-5.4/chat/completions"
+    )
+    assert json.loads(request.content)["stream"] is True
+
+
+def test_embed_requests_schema_compatible_dimensions(monkeypatch):
+    captured = {}
+
+    class FakeEmbeddings:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2])])
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(embeddings=FakeEmbeddings()),
+    )
+    monkeypatch.setattr(main, "EMBED_MODEL", "text-embedding-3-small")
+    monkeypatch.setattr(main, "EMBED_DIMENSIONS", 2)
+
+    assert main.embed(["기억"]) == [[0.1, 0.2]]
+    assert captured == {
+        "model": "text-embedding-3-small",
+        "input": ["기억"],
+        "dimensions": 2,
+    }
+
+
+def test_embed_rejects_wrong_provider_dimension(monkeypatch):
+    class WrongSizedEmbeddings:
+        def create(self, **_kwargs):
+            return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1])])
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(embeddings=WrongSizedEmbeddings()),
+    )
+    monkeypatch.setattr(main, "EMBED_DIMENSIONS", 2)
+
+    with pytest.raises(RuntimeError, match="임베딩 차원"):
+        main.embed(["기억"])
+
+
+def test_embed_rejects_missing_provider_result(monkeypatch):
+    class MissingEmbeddings:
+        def create(self, **_kwargs):
+            return SimpleNamespace(data=[])
+
+    monkeypatch.setattr(
+        main,
+        "oai",
+        SimpleNamespace(embeddings=MissingEmbeddings()),
+    )
+    monkeypatch.setattr(main, "EMBED_DIMENSIONS", 1536)
+
+    with pytest.raises(RuntimeError, match="응답 수"):
+        main.embed(["기억"])
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("key: sk-" + "x" * 32, True),
+        ("key: atl-" + "x" * 32, True),
+        ("프로젝트 ATL-123", False),
+    ],
+)
+def test_contains_openai_api_key_supports_gateway_prefix(value, expected):
+    assert main.contains_openai_api_key(value) is expected
 
 
 class _MemoryQuery:
@@ -1407,6 +1723,7 @@ def test_normalize_parsed_payload_chunks_long_fallback():
 def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
     monkeypatch,
 ):
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     text = """[기록 유형] 업무
 [카테고리] 비용 처리 가이드
 [제목] 2026년 8월 ATL AI 도구 사용료 처리
@@ -1440,8 +1757,11 @@ def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
         }],
     }
 
+    model_calls = []
+
     class FakeCompletions:
-        def create(self, **_kwargs):
+        def create(self, **kwargs):
+            model_calls.append(kwargs)
             return SimpleNamespace(choices=[SimpleNamespace(
                 message=SimpleNamespace(content=json.dumps(model_payload))
             )])
@@ -1470,6 +1790,9 @@ def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
         "41000069-001",
         "CL/AI",
     ]
+    assert model_calls[0]["model"] == "gpt-5.4"
+    assert model_calls[0]["max_completion_tokens"] == 4000
+    assert "max_tokens" not in model_calls[0]
 
 
 def test_structured_field_value_changes_ingest_content_hash(monkeypatch):
@@ -2287,7 +2610,18 @@ def test_distinct_user_or_admin_can_approve_pending_proposal(monkeypatch, role):
 
 
 @pytest.mark.parametrize("scope", ["personal", "shared"])
-def test_ingest_rejects_openai_api_key_before_parser_or_storage(monkeypatch, scope):
+@pytest.mark.parametrize(
+    "api_key",
+    [
+        "sk-proj-" + "x" * 32,
+        "atl-" + "x" * 40,
+    ],
+)
+def test_ingest_rejects_openai_api_key_before_parser_or_storage(
+    monkeypatch,
+    scope,
+    api_key,
+):
     def unexpected(*_args, **_kwargs):
         raise AssertionError("OpenAI key input must be rejected before external work")
 
@@ -2297,7 +2631,7 @@ def test_ingest_rejects_openai_api_key_before_parser_or_storage(monkeypatch, sco
     with pytest.raises(HTTPException) as exc_info:
         main.ingest(
             main.IngestRequest(
-                text="API key: sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+                text=f"API key: {api_key}",
                 scope=scope,
             ),
             _request("POST", "/api/ingest"),
@@ -3027,12 +3361,19 @@ def test_other_users_personal_memory_cannot_be_updated_or_deleted(monkeypatch, o
     assert ALICE_ID in db.visibility_expressions[0]
 
 
-def test_update_rejects_openai_api_key_before_lookup_or_embedding():
+@pytest.mark.parametrize(
+    "api_key",
+    [
+        "sk-proj-" + "x" * 32,
+        "atl-" + "x" * 40,
+    ],
+)
+def test_update_rejects_openai_api_key_before_lookup_or_embedding(api_key):
     with pytest.raises(HTTPException) as exc_info:
         main.update_memory(
             "memory-id",
             main.UpdateMemoryRequest(
-                content="sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+                content=api_key
             ),
             _request("PATCH", "/api/memories/memory-id"),
         )
@@ -3041,7 +3382,14 @@ def test_update_rejects_openai_api_key_before_lookup_or_embedding():
     assert "API 키" in exc_info.value.detail
 
 
-def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup():
+@pytest.mark.parametrize(
+    "api_key",
+    [
+        "sk-proj-" + "x" * 32,
+        "atl-" + "x" * 40,
+    ],
+)
+def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup(api_key):
     with pytest.raises(HTTPException) as exc_info:
         main.update_memory(
             "memory-id",
@@ -3049,7 +3397,7 @@ def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup():
                 content="otherwise safe content",
                 metadata={
                     "subject": {
-                        "credentials": "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+                        "credentials": api_key
                     }
                 },
             ),
@@ -3061,6 +3409,7 @@ def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup():
 
 
 def test_contextualize_search_question_rewrites_generic_detail_followup(monkeypatch):
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     calls = []
 
     class FakeCompletions:
@@ -3090,6 +3439,10 @@ def test_contextualize_search_question_rewrites_generic_detail_followup(monkeypa
         "ATL AI 도구 사용료의 프로젝트 코드와 비용 계정을 구체적으로 알려줘"
     )
     assert len(calls) == 1
+    assert calls[0]["model"] == "gpt-5.4"
+    assert calls[0]["max_completion_tokens"] == 120
+    assert "max_tokens" not in calls[0]
+    assert "temperature" not in calls[0]
     assert calls[0]["messages"][-1] == {
         "role": "user",
         "content": "구체적으로 알려줘",
@@ -3580,6 +3933,7 @@ def test_no_information_detector_rejects_partial_grounded_answers():
 def test_nonstream_replaces_short_no_information_answer_with_grounded_answer(
     monkeypatch,
 ):
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     grounded = (
         "**2026년 8월 ATL AI 도구 사용료 처리**\n"
         "- 프로젝트: 41000069-001 / 26년 AI Talent Lab 운영\n"
@@ -3616,6 +3970,9 @@ def test_nonstream_replaces_short_no_information_answer_with_grounded_answer(
     class FalseNegativeCompletions:
         def create(self, **kwargs):
             assert kwargs.get("stream") is not True
+            assert kwargs["model"] == "gpt-5.4"
+            assert kwargs["max_completion_tokens"] == 1500
+            assert "max_tokens" not in kwargs
             events.append(("model", False))
             return SimpleNamespace(choices=[SimpleNamespace(
                 message=SimpleNamespace(content="저장된 정보에서 찾지 못했다.")
@@ -3737,6 +4094,7 @@ def test_prepare_answer_searches_shared_plus_requesting_users_personal_memories(
 
 
 def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     prepared = {
         "fallback": None,
         "messages": [{"role": "user", "content": "question"}],
@@ -3768,6 +4126,9 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs):
             assert kwargs["stream"] is True
+            assert kwargs["model"] == "gpt-5.4"
+            assert kwargs["max_completion_tokens"] == 1500
+            assert "max_tokens" not in kwargs
             return iter(chunks)
 
     monkeypatch.setattr(
@@ -4495,6 +4856,56 @@ def test_ai_usage_migration_is_rerunnable_and_service_role_only():
             < recharge.index("insert into public.audit_logs")
             < recharge.index("return query select updated_remaining")
         )
+
+
+def test_ai_talent_key_guard_is_present_in_schema_and_upgrade_migration():
+    root = Path(__file__).resolve().parents[1]
+    migration = (root / "migration_ai_talent_api_key_guard.sql").read_text(
+        encoding="utf-8"
+    )
+    sql_documents = [
+        (root / "schema.sql").read_text(encoding="utf-8"),
+        migration,
+    ]
+
+    for sql in sql_documents:
+        assert "create or replace function public.set_memory_derived_fields" in sql
+        assert "(sk|atl)-[A-Za-z0-9_-]{20,}" in sql
+        assert "AI API 키처럼 보이는 값" in sql
+
+    assert re.search(r"lock table\s+public\.memories", migration)
+    assert "insert into public.quarantined_memories" in migration
+    assert "[REDACTED_AI_API_KEY]" in migration
+    assert "delete from public.memories" in migration
+    assert "delete from public.shared_memory_proposals" in migration
+    assert "update public.shared_memory_deletion_proposals" in migration
+    assert "source_snapshot = regexp_replace" in migration
+    assert "content_snapshot = regexp_replace" in migration
+    assert "embedding = null" in migration
+
+    schema_trigger = sql_documents[0].split(
+        "create or replace function public.set_memory_derived_fields()", 1
+    )[1].split("$$;", 1)[0]
+    migration_trigger = migration.split(
+        "create or replace function public.set_memory_derived_fields()", 1
+    )[1].split("$$;", 1)[0]
+    def executable_sql(body):
+        without_line_comments = "\n".join(
+            line.split("--", 1)[0]
+            for line in body.splitlines()
+        )
+        return " ".join(without_line_comments.split())
+
+    assert executable_sql(schema_trigger) == executable_sql(migration_trigger)
+
+
+def test_embedding_configuration_matches_supabase_vector_schema():
+    root = Path(__file__).resolve().parents[1]
+    schema = (root / "schema.sql").read_text(encoding="utf-8").lower()
+
+    assert main.EMBED_MODEL == "text-embedding-3-small"
+    assert main.EMBED_DIMENSIONS == 1536
+    assert "embedding vector(1536)" in schema
 
 
 def test_shared_memory_approval_migration_enforces_distinct_two_user_consent():

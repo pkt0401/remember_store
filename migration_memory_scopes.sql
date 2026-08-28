@@ -1,8 +1,8 @@
 -- 기존 프로젝트에 공유/개인 기억, Supabase Auth UUID, RLS를 추가합니다.
 -- migration_security.sql 적용 후 실행하세요.
 --
--- 기존 기억은 모두 공유 기억으로 전환합니다. 다만 실제 OpenAI API 키와 같은
--- `sk-...` 비밀값이 들어 있는 행은 검색 대상에서 제거합니다. 키 문자열·해시·
+-- 기존 기억은 모두 공유 기억으로 전환합니다. 다만 실제 OpenAI 또는 AI Talent
+-- API 키와 같은 `sk-...`/`atl-...` 비밀값이 들어 있는 행은 검색 대상에서 제거합니다. 키 문자열·해시·
 -- 임베딩은 폐기하고 마스킹된 기록만 public.quarantined_memories에 보존합니다.
 -- 격리 테이블은 service_role만 접근할 수 있으며 애플리케이션의 일반 기억
 -- 조회/RPC에서는 사용하지 않아야 합니다.
@@ -148,20 +148,20 @@ select
   m.id,
   regexp_replace(
     m.source,
-    'sk-[A-Za-z0-9_-]{20,}',
+    '(sk|atl)-[A-Za-z0-9_-]{20,}',
     '[REDACTED_OPENAI_API_KEY]',
     'g'
   ),
   regexp_replace(
     m.content,
-    'sk-[A-Za-z0-9_-]{20,}',
+    '(sk|atl)-[A-Za-z0-9_-]{20,}',
     '[REDACTED_OPENAI_API_KEY]',
     'g'
   ),
   null::text,
   regexp_replace(
     m.metadata::text,
-    'sk-[A-Za-z0-9_-]{20,}',
+    '(sk|atl)-[A-Za-z0-9_-]{20,}',
     '[REDACTED_OPENAI_API_KEY]',
     'g'
   )::jsonb,
@@ -177,26 +177,26 @@ from public.memories as m
 where (
   coalesce(m.source, '') || ' ' || coalesce(m.content, '') || ' '
   || coalesce(m.metadata::text, '')
-) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
+) ~ '(^|[^A-Za-z0-9_-])(sk|atl)-[A-Za-z0-9_-]{20,}'
 on conflict (id) do nothing;
 
 -- 이전에 일부 실행된 격리본도 실제 키와 임베딩이 남지 않게 정리합니다.
 update public.quarantined_memories
 set source = regexp_replace(
       source,
-      'sk-[A-Za-z0-9_-]{20,}',
+      '(sk|atl)-[A-Za-z0-9_-]{20,}',
       '[REDACTED_OPENAI_API_KEY]',
       'g'
     ),
     content = regexp_replace(
       content,
-      'sk-[A-Za-z0-9_-]{20,}',
+      '(sk|atl)-[A-Za-z0-9_-]{20,}',
       '[REDACTED_OPENAI_API_KEY]',
       'g'
     ),
     metadata = regexp_replace(
       metadata::text,
-      'sk-[A-Za-z0-9_-]{20,}',
+      '(sk|atl)-[A-Za-z0-9_-]{20,}',
       '[REDACTED_OPENAI_API_KEY]',
       'g'
     )::jsonb,
@@ -210,7 +210,7 @@ where q.id = m.id
   and (
     coalesce(m.source, '') || ' ' || coalesce(m.content, '') || ' '
     || coalesce(m.metadata::text, '')
-  ) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}';
+  ) ~ '(^|[^A-Za-z0-9_-])(sk|atl)-[A-Za-z0-9_-]{20,}';
 
 -- 같은 비밀값의 재저장은 아래 트리거가 차단합니다. CHECK 위반은 실패한 행
 -- 전체를 DB 로그에 남길 수 있어 키 내용이 없는 명시적 예외를 사용합니다.
@@ -276,10 +276,10 @@ begin
   if (
     coalesce(new.source, '') || ' ' || coalesce(new.content, '') || ' '
     || coalesce(new.metadata::text, '')
-  ) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}' then
+  ) ~ '(^|[^A-Za-z0-9_-])(sk|atl)-[A-Za-z0-9_-]{20,}' then
     raise exception using
       errcode = '22023',
-      message = 'OpenAI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다.';
+      message = 'AI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다.';
   end if;
 
   if tg_op = 'INSERT' then

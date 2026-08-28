@@ -70,7 +70,7 @@ Redis를 추가하는 것이 적절합니다.
 
 - Python 3.12 권장
 - Supabase 프로젝트
-- OpenAI API 키
+- AI Talent 게이트웨이 키 또는 OpenAI API 키
 - WSL 또는 Linux/macOS 환경 권장
 
 ## Supabase 설정
@@ -81,17 +81,22 @@ Supabase SQL Editor에서 설치 상태에 맞는 SQL을 실행합니다.
 - 기존 프로젝트: `migration_security.sql`, `migration_memory_scopes.sql`,
   `migration_auth_accounts.sql`, `migration_ai_usage_credits.sql`,
   `migration_shared_memory_approvals.sql`,
-  `migration_shared_memory_deletion_approvals.sql` 순서로 실행
+  `migration_shared_memory_deletion_approvals.sql`,
+  `migration_ai_talent_api_key_guard.sql` 순서로 실행
 - `계정은 Memory Agent 회원가입 API를 통해 생성해야 합니다.` 오류가 발생하는
   기존 프로젝트: `migration_remove_legacy_signup_guard.sql`을 먼저 실행
 - `migration_expiry.sql`은 과거 설치용 유통기한 마이그레이션이며,
   `migration_security.sql`에 해당 변경이 포함되어 있습니다.
 
-`migration_memory_scopes.sql`은 기존 기억을 공유 기억으로 전환하고, 실제 OpenAI
-API 키 형태가 포함된 행은 일반 기억에서 제거합니다. 키 원문·본문 해시·임베딩은
+`migration_memory_scopes.sql`은 기존 기억을 공유 기억으로 전환하고, 실제 OpenAI 또는
+AI Talent API 키 형태가 포함된 행은 일반 기억에서 제거합니다. 키 원문·본문 해시·임베딩은
 영구 폐기하며, `quarantined_memories`에는 키를 마스킹한 감사용 사본만 남습니다.
 실행 후 앱을 재시작해 기존 메모리 캐시를 비웁니다. 격리된 키가 실제 사용 중인
-키였다면 OpenAI 대시보드에서 폐기하고 새 키로 교체하세요.
+키였다면 해당 발급 서비스에서 폐기하고 새 키로 교체하세요.
+
+`migration_ai_talent_api_key_guard.sql`은 기존 `atl-...` 키 포함 행도 마스킹 격리한 뒤,
+앱을 통하지 않는 Supabase 직접 쓰기에서도 OpenAI와 AI Talent 게이트웨이 키 형식을
+모두 차단합니다.
 
 `migration_auth_accounts.sql`은 로그인 아이디를 Supabase Auth의 불변 `user.id` UUID와
 연결하는 비공개 `account_profiles` 테이블과 가입 트리거를 만듭니다. 기존 Auth 사용자도
@@ -144,12 +149,18 @@ python scripts/bootstrap_admin.py --email admin@example.com
 `.env.example`을 참고해 프로젝트 루트에 `.env`를 만듭니다.
 
 ```dotenv
+# AI Talent Azure OpenAI 호환 게이트웨이(사용할 때 세 값을 함께 설정)
+AI_TALENT_API_KEY=your-ai-talent-api-key
+AI_TALENT_ENDPOINT=https://skax.ai-talentlab.com
+AI_TALENT_API_VERSION=2024-12-01-preview
+
+# 게이트웨이가 없을 때만 사용하는 직접 OpenAI fallback
 OPENAI_API_KEY=your-openai-api-key
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
 SUPABASE_SERVICE_KEY=your-supabase-service-role-key
 
-# 검색·처리 설정
+# 검색·처리 설정 (CHAT_MODEL은 직접 OpenAI fallback에서만 사용)
 CHAT_MODEL=gpt-4o-mini
 EMBED_MODEL=text-embedding-3-small
 SIM_THRESHOLD=0.25
@@ -357,13 +368,19 @@ Python 3.12, 서울 리전, Fluid Compute와 최대 실행 시간은 `.python-ve
 ```powershell
 npx vercel@59.0.0 login
 npx vercel@59.0.0 link
-npx vercel@59.0.0 env add OPENAI_API_KEY production,preview --sensitive
-npx vercel@59.0.0 env add SUPABASE_URL production,preview --sensitive
-npx vercel@59.0.0 env add SUPABASE_PUBLISHABLE_KEY production,preview --sensitive
-npx vercel@59.0.0 env add SUPABASE_SERVICE_KEY production,preview --sensitive
+npx vercel@59.0.0 env add AI_TALENT_API_KEY production --sensitive
+npx vercel@59.0.0 env add AI_TALENT_ENDPOINT production
+npx vercel@59.0.0 env add AI_TALENT_API_VERSION production
+npx vercel@59.0.0 env add OPENAI_API_KEY production --sensitive
+npx vercel@59.0.0 env add SUPABASE_URL production --sensitive
+npx vercel@59.0.0 env add SUPABASE_PUBLISHABLE_KEY production --sensitive
+npx vercel@59.0.0 env add SUPABASE_SERVICE_KEY production --sensitive
 npx vercel@59.0.0 deploy
 npx vercel@59.0.0 deploy --prod
 ```
+
+Preview 환경에도 같은 값이 필요하면 `production`을 `preview`로 바꾸어 각 변수를
+별도로 다시 등록합니다.
 
 사내 인증서 검사 환경에서 Node가 인증서를 거부하면 검증을 끄지 말고 현재
 PowerShell 세션에 `$env:NODE_OPTIONS='--use-system-ca'`를 먼저 설정합니다.
@@ -377,7 +394,8 @@ Deployment Protection을 켠 뒤 공유합니다. 회사·팀의 지속 운영�
 Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연결하고 다음 값을
 환경변수로 등록합니다.
 
-- `OPENAI_API_KEY`
+- `AI_TALENT_API_KEY`, `AI_TALENT_ENDPOINT`, `AI_TALENT_API_VERSION` 또는
+  직접 연결용 `OPENAI_API_KEY`
 - `SUPABASE_URL`
 - `SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SERVICE_KEY`
@@ -390,13 +408,19 @@ Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연�
 ## 보안 주의사항
 
 - `.env`는 Git에 커밋하지 않습니다.
-- `OPENAI_API_KEY`와 RLS를 우회하는 `SUPABASE_SERVICE_KEY`는 모두 서버 전용
+- `AI_TALENT_API_KEY`, `OPENAI_API_KEY`와 RLS를 우회하는 `SUPABASE_SERVICE_KEY`는 모두 서버 전용
   비밀입니다. 브라우저·공유 기억·Git에 넣지 않습니다. 클라이언트에 공개할 수 있는
   값은 `SUPABASE_PUBLISHABLE_KEY`뿐입니다.
+- AI Talent 게이트웨이를 설정한 운영 채팅 모델은 `gpt-5.4`를 사용합니다. 게이트웨이를
+  설정하지 않은 직접 OpenAI fallback은 `CHAT_MODEL` 값(기본 `gpt-4o-mini`)을 사용합니다.
+  기존 기억은 `text-embedding-3-small` 벡터로 저장되어 있으므로 전량 재임베딩하기 전에는 `EMBED_MODEL`을 다른 모델로
+  변경하지 않습니다.
 - 비밀 키가 로그나 대화에 노출되면 즉시 폐기하고 새로 발급합니다.
-- 저장 내용과 질문은 처리 과정에서 OpenAI와 Supabase로 전송됩니다.
-- OpenAI API 키 형태는 기억 저장 전에 차단됩니다. 다른 비밀번호도 개인기억으로만
-  저장하고, 저장 내용이 처리 과정에서 OpenAI와 Supabase로 전송된다는 점을 확인하세요.
+- 저장 내용과 질문은 처리 과정에서 AI Talent 게이트웨이(설정한 경우) 또는 OpenAI,
+  그리고 Supabase로 전송됩니다.
+- OpenAI와 AI Talent API 키 형태는 기억 저장 전에 차단됩니다. 다른 비밀번호도
+  개인기억으로만 저장하고, 저장 내용이 처리 과정에서 AI Talent 게이트웨이(설정 시)
+  또는 OpenAI와 Supabase로 전송된다는 점을 확인하세요.
 - 기억 테이블과 검색 RPC는 사용자 JWT의 `auth.uid()`를 이용한 RLS와 FastAPI의
   범위 필터를 함께 적용합니다. `SUPABASE_SERVICE_KEY`는 브라우저에 노출하지 않습니다.
 - 응답에는 CSP, 프레임 차단, MIME 스니핑 차단 등 기본 브라우저 보안 헤더가 적용됩니다.

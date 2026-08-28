@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 from pydantic import BaseModel, field_validator
 from supabase import create_client
 from supabase.client import ClientOptions
@@ -50,19 +50,37 @@ def signup_enabled_for_environment(is_production: bool) -> bool:
     return setting in {"1", "true", "yes", "on"}
 
 
+AI_TALENT_CHAT_MODEL = "gpt-5.4"
+
+
+def resolve_chat_model(ai_talent_endpoint: str, direct_chat_model: str) -> str:
+    if ai_talent_endpoint:
+        return AI_TALENT_CHAT_MODEL
+    return direct_chat_model.strip() or "gpt-4o-mini"
+
+
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"].strip()
 SUPABASE_PUBLISHABLE_KEY = (
     os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
 ).strip()
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+AI_TALENT_API_KEY = os.getenv("AI_TALENT_API_KEY", "").strip()
+AI_TALENT_ENDPOINT = os.getenv("AI_TALENT_ENDPOINT", "").strip().rstrip("/")
+AI_TALENT_API_VERSION = os.getenv(
+    "AI_TALENT_API_VERSION", "2024-12-01-preview"
+).strip()
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 IS_PRODUCTION = is_production_environment(APP_ENV)
 SIGNUP_ENABLED = signup_enabled_for_environment(IS_PRODUCTION)
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 12)))
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"}
-CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
+CHAT_MODEL = resolve_chat_model(
+    AI_TALENT_ENDPOINT,
+    os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")  # 1536 dims
+EMBED_DIMENSIONS = 1536  # Supabase memories.embedding is vector(1536)
 SIM_THRESHOLD = float(os.getenv("SIM_THRESHOLD", "0.25"))  # 이보다 낮으면 "없음" 처리
 SIMILAR_MEMORY_THRESHOLD = float(os.getenv("SIMILAR_MEMORY_THRESHOLD", "0.82"))
 SIMILAR_MEMORY_LIMIT = 3
@@ -73,17 +91,57 @@ MAX_INGEST_CHARS = int(os.getenv("MAX_INGEST_CHARS", "20000"))
 MAX_CATALOG_ROWS = int(os.getenv("MAX_CATALOG_ROWS", "5000"))
 KST = ZoneInfo("Asia/Seoul")
 
+if EMBED_MODEL != "text-embedding-3-small":
+    raise RuntimeError(
+        "기존 기억과의 벡터 호환성을 위해 EMBED_MODEL은 "
+        "text-embedding-3-small이어야 합니다."
+    )
+
 if not SUPABASE_PUBLISHABLE_KEY:
     raise RuntimeError(
         "SUPABASE_PUBLISHABLE_KEY가 필요합니다. Supabase Auth 사용자 JWT와 RLS에 사용됩니다."
     )
+
+def create_ai_client(
+    *,
+    openai_api_key: str,
+    ai_talent_api_key: str,
+    ai_talent_endpoint: str,
+    ai_talent_api_version: str,
+):
+    gateway_configured = bool(ai_talent_api_key or ai_talent_endpoint)
+    if gateway_configured:
+        if not ai_talent_api_key or not ai_talent_endpoint:
+            raise RuntimeError(
+                "AI_TALENT_API_KEY와 AI_TALENT_ENDPOINT를 함께 설정해야 합니다."
+            )
+        if not ai_talent_api_version:
+            raise RuntimeError("AI_TALENT_API_VERSION이 필요합니다.")
+        return AzureOpenAI(
+            api_key=ai_talent_api_key,
+            azure_endpoint=ai_talent_endpoint,
+            api_version=ai_talent_api_version,
+            timeout=30.0,
+            max_retries=2,
+        )
+    if not openai_api_key:
+        raise RuntimeError(
+            "AI_TALENT_API_KEY 또는 OPENAI_API_KEY가 필요합니다."
+        )
+    return OpenAI(api_key=openai_api_key, timeout=30.0, max_retries=2)
+
 
 admin_sb = create_client(
     SUPABASE_URL,
     SUPABASE_SERVICE_KEY,
     options=ClientOptions(auto_refresh_token=False, persist_session=False),
 )
-oai = OpenAI(api_key=OPENAI_API_KEY, timeout=30.0, max_retries=2)
+oai = create_ai_client(
+    openai_api_key=OPENAI_API_KEY,
+    ai_talent_api_key=AI_TALENT_API_KEY,
+    ai_talent_endpoint=AI_TALENT_ENDPOINT,
+    ai_talent_api_version=AI_TALENT_API_VERSION,
+)
 
 app = FastAPI(title="Memory Agent")
 
@@ -1080,7 +1138,7 @@ class AskRequest(BaseModel):
 
 VALID_SOURCES = {"slack", "email", "note"}
 OPENAI_API_KEY_PATTERN = re.compile(
-    r"(?:^|[^A-Za-z0-9_-])(sk-[A-Za-z0-9_-]{20,})(?=$|[^A-Za-z0-9_-])"
+    r"(?:^|[^A-Za-z0-9_-])((?:sk|atl)-[A-Za-z0-9_-]{20,})(?=$|[^A-Za-z0-9_-])"
 )
 
 
@@ -1097,8 +1155,19 @@ def today_kst() -> date:
     return datetime.now(KST).date()
 
 def embed(texts: list[str]) -> list[list[float]]:
-    resp = oai.embeddings.create(model=EMBED_MODEL, input=texts)
-    return [d.embedding for d in resp.data]
+    resp = oai.embeddings.create(
+        model=EMBED_MODEL,
+        input=texts,
+        dimensions=EMBED_DIMENSIONS,
+    )
+    embeddings = [d.embedding for d in resp.data]
+    if len(embeddings) != len(texts):
+        raise RuntimeError("요청한 텍스트 수와 임베딩 응답 수가 다릅니다.")
+    if any(len(embedding) != EMBED_DIMENSIONS for embedding in embeddings):
+        raise RuntimeError(
+            f"임베딩 차원이 {EMBED_DIMENSIONS}이 아닙니다."
+        )
+    return embeddings
 
 
 def first_rpc_row(result: object) -> Optional[dict]:
@@ -1759,7 +1828,7 @@ def parse_pasted_text(text: str) -> dict:
     today = today_kst().strftime("%Y-%m-%d (%A)")
     resp = oai.chat.completions.create(
         model=CHAT_MODEL,
-        max_tokens=4000,
+        max_completion_tokens=4000,
         response_format={"type": "json_object"},  # JSON 강제
         messages=[
             {"role": "system", "content": PARSER_SYSTEM + f"\n\n오늘 날짜: {today}. 본문에 '다음주 수요일' 같은 상대 날짜가 있으면 metadata.resolved_dates에 절대 날짜로 변환해 기록하세요 (본문은 수정 금지)."},
@@ -1958,8 +2027,7 @@ def contextualize_search_question(question: str, history: Optional[list[dict]]) 
     try:
         response = oai.chat.completions.create(
             model=CHAT_MODEL,
-            max_tokens=120,
-            temperature=0,
+            max_completion_tokens=120,
             messages=[
                 {"role": "system", "content": REWRITE_SYSTEM},
                 *turns,
@@ -2046,8 +2114,8 @@ def ingest(req: IngestRequest, request: Request):
     if contains_openai_api_key(text):
         raise HTTPException(
             400,
-            "OpenAI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다. "
-            "서버 환경변수 OPENAI_API_KEY에만 보관하세요.",
+            "AI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다. "
+            "서버 환경변수 AI_TALENT_API_KEY 또는 OPENAI_API_KEY에만 보관하세요.",
         )
 
     user = current_user(request)
@@ -2790,7 +2858,7 @@ def ask_with_consumed_use(req: AskRequest, user: dict, db) -> dict:
     if answer is None:
         resp = oai.chat.completions.create(
             model=CHAT_MODEL,
-            max_tokens=1500,
+            max_completion_tokens=1500,
             messages=prepared["messages"],
         )
         answer = resp.choices[0].message.content or ""
@@ -2863,7 +2931,7 @@ def ask_stream(req: AskRequest, request: Request):
             try:
                 stream = oai.chat.completions.create(
                     model=CHAT_MODEL,
-                    max_tokens=1500,
+                    max_completion_tokens=1500,
                     messages=prepared["messages"],
                     stream=True,
                 )
@@ -3113,7 +3181,7 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest, request: Request):
     if contains_openai_api_key(content) or contains_openai_api_key(metadata_text):
         raise HTTPException(
             400,
-            "OpenAI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다.",
+            "AI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다.",
         )
 
     user = current_user(request)

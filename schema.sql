@@ -643,7 +643,7 @@ where updated_at is null;
 alter table public.memories alter column updated_at set default now();
 alter table public.memories alter column updated_at set not null;
 
--- OpenAI API 키처럼 보이는 기존 기억은 일반 검색 대상과 물리적으로 분리합니다.
+-- OpenAI 또는 AI Talent API 키처럼 보이는 기존 기억은 일반 검색 대상과 물리적으로 분리합니다.
 -- 실제 키와 그 임베딩은 남기지 않고 마스킹된 감사용 사본만 보존합니다.
 -- 이 테이블은 아래에서 service_role 전용으로 잠급니다.
 create table if not exists public.quarantined_memories (
@@ -682,20 +682,20 @@ select
   m.id,
   regexp_replace(
     m.source,
-    'sk-[A-Za-z0-9_-]{20,}',
+    '(sk|atl)-[A-Za-z0-9_-]{20,}',
     '[REDACTED_OPENAI_API_KEY]',
     'g'
   ),
   regexp_replace(
     m.content,
-    'sk-[A-Za-z0-9_-]{20,}',
+    '(sk|atl)-[A-Za-z0-9_-]{20,}',
     '[REDACTED_OPENAI_API_KEY]',
     'g'
   ),
   null::text,
   regexp_replace(
     m.metadata::text,
-    'sk-[A-Za-z0-9_-]{20,}',
+    '(sk|atl)-[A-Za-z0-9_-]{20,}',
     '[REDACTED_OPENAI_API_KEY]',
     'g'
   )::jsonb,
@@ -711,7 +711,7 @@ from public.memories as m
 where (
   coalesce(m.source, '') || ' ' || coalesce(m.content, '') || ' '
   || coalesce(m.metadata::text, '')
-) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
+) ~ '(^|[^A-Za-z0-9_-])(sk|atl)-[A-Za-z0-9_-]{20,}'
 on conflict (id) do nothing;
 
 -- 이전에 이 스크립트가 일부 실행된 경우에도 격리본에서 실제 키와 임베딩을
@@ -719,19 +719,19 @@ on conflict (id) do nothing;
 update public.quarantined_memories
 set source = regexp_replace(
       source,
-      'sk-[A-Za-z0-9_-]{20,}',
+      '(sk|atl)-[A-Za-z0-9_-]{20,}',
       '[REDACTED_OPENAI_API_KEY]',
       'g'
     ),
     content = regexp_replace(
       content,
-      'sk-[A-Za-z0-9_-]{20,}',
+      '(sk|atl)-[A-Za-z0-9_-]{20,}',
       '[REDACTED_OPENAI_API_KEY]',
       'g'
     ),
     metadata = regexp_replace(
       metadata::text,
-      'sk-[A-Za-z0-9_-]{20,}',
+      '(sk|atl)-[A-Za-z0-9_-]{20,}',
       '[REDACTED_OPENAI_API_KEY]',
       'g'
     )::jsonb,
@@ -745,7 +745,7 @@ where q.id = m.id
   and (
     coalesce(m.source, '') || ' ' || coalesce(m.content, '') || ' '
     || coalesce(m.metadata::text, '')
-  ) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}';
+  ) ~ '(^|[^A-Za-z0-9_-])(sk|atl)-[A-Za-z0-9_-]{20,}';
 
 -- 이후 저장은 아래의 파생 필드 트리거에서 같은 형태의 키를 차단합니다.
 -- CHECK 위반은 실패한 행 전체를 DB 로그에 남길 수 있어 명시적 예외를 사용합니다.
@@ -845,10 +845,10 @@ begin
   if (
     coalesce(new.source, '') || ' ' || coalesce(new.content, '') || ' '
     || coalesce(new.metadata::text, '')
-  ) ~ '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}' then
+  ) ~ '(^|[^A-Za-z0-9_-])(sk|atl)-[A-Za-z0-9_-]{20,}' then
     raise exception using
       errcode = '22023',
-      message = 'OpenAI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다.';
+      message = 'AI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다.';
   end if;
 
   if tg_op = 'INSERT' then
