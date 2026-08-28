@@ -1003,7 +1003,16 @@
     gap: 8px;
   }
 
-  #memList { padding: 6px 22px 6px; }
+  #memList {
+    padding: 6px 22px 6px;
+    max-height: 55vh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+  #memList::-webkit-scrollbar { width: 8px; }
+  #memList::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  #memList::-webkit-scrollbar-track { background: transparent; }
   .date-group {
     font-family: var(--serif-jp);
     font-size: 11px;
@@ -1223,9 +1232,11 @@
   #chat {
     display: flex;
     flex-direction: column;
-    min-height: calc(100vh - 220px);
+    height: calc(100vh - 44px);
+    max-height: calc(100vh - 44px);
     position: sticky;
     top: 22px;
+    overflow: hidden;
   }
   #chat .panel-title-group::before { content: ""; display: none; }
   #chat .panel-head b {
@@ -1246,6 +1257,7 @@
   }
   #log {
     flex: 1;
+    min-height: 0;
     padding: 20px 22px;
     overflow-y: auto;
     display: flex;
@@ -1253,7 +1265,12 @@
     gap: 14px;
     background:
       linear-gradient(180deg, var(--panel) 0%, var(--panel) 100%);
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
   }
+  #log::-webkit-scrollbar { width: 8px; }
+  #log::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  #log::-webkit-scrollbar-track { background: transparent; }
   #log .empty {
     margin: auto;
     padding: 60px 20px;
@@ -1622,7 +1639,13 @@
      ========================================================================== */
   @media (max-width: 1024px) {
     main { grid-template-columns: 1fr; }
-    #chat { position: static; min-height: 520px; }
+    #chat {
+      position: static;
+      height: auto;
+      max-height: 70vh;
+      min-height: 520px;
+    }
+    #memList { max-height: 60vh; }
     #loginOverlay::before, #loginOverlay::after { display: none; }
   }
   @media (max-width: 640px) {
