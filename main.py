@@ -53,6 +53,11 @@ def signup_enabled_for_environment(is_production: bool) -> bool:
 AI_TALENT_CHAT_MODEL = "gpt-5.6-luna"
 
 
+def normalize_ai_talent_env_value(value: str) -> str:
+    """Remove whitespace and an accidental UTF-8 BOM from Vercel values."""
+    return value.strip().lstrip("\ufeff").strip()
+
+
 def resolve_chat_model(ai_talent_endpoint: str, direct_chat_model: str) -> str:
     if ai_talent_endpoint:
         return AI_TALENT_CHAT_MODEL
@@ -65,11 +70,15 @@ SUPABASE_PUBLISHABLE_KEY = (
     os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
 ).strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-AI_TALENT_API_KEY = os.getenv("AI_TALENT_API_KEY", "").strip()
-AI_TALENT_ENDPOINT = os.getenv("AI_TALENT_ENDPOINT", "").strip().rstrip("/")
-AI_TALENT_API_VERSION = os.getenv(
-    "AI_TALENT_API_VERSION", "2024-12-01-preview"
-).strip()
+AI_TALENT_API_KEY = normalize_ai_talent_env_value(
+    os.getenv("AI_TALENT_API_KEY", "")
+)
+AI_TALENT_ENDPOINT = normalize_ai_talent_env_value(
+    os.getenv("AI_TALENT_ENDPOINT", "")
+).rstrip("/")
+AI_TALENT_API_VERSION = normalize_ai_talent_env_value(
+    os.getenv("AI_TALENT_API_VERSION", "2024-12-01-preview")
+)
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 IS_PRODUCTION = is_production_environment(APP_ENV)
 SIGNUP_ENABLED = signup_enabled_for_environment(IS_PRODUCTION)

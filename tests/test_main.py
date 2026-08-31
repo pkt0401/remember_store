@@ -106,6 +106,18 @@ def _assert_private_no_store(response, *, no_transform=False):
     assert ("no-transform" in directives) is no_transform
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("\ufeff2024-12-01-preview", "2024-12-01-preview"),
+        ("  \ufeffgateway-test-key\r\n", "gateway-test-key"),
+        (" https://skax.ai-talentlab.com/ ", "https://skax.ai-talentlab.com/"),
+    ],
+)
+def test_normalize_ai_talent_env_value_removes_bom_and_whitespace(raw, expected):
+    assert main.normalize_ai_talent_env_value(raw) == expected
+
+
 def test_create_ai_client_prefers_ai_talent_gateway(monkeypatch):
     captured = {}
     expected_client = object()
