@@ -149,18 +149,24 @@ python scripts/bootstrap_admin.py --email admin@example.com
 `.env.example`을 참고해 프로젝트 루트에 `.env`를 만듭니다.
 
 ```dotenv
-# AI Talent Azure OpenAI 호환 게이트웨이(사용할 때 세 값을 함께 설정)
+# GPT-5.4 채팅 Azure 배포(사용할 때 네 값을 함께 설정)
+AZURE_OPENAI_54_API_KEY=your-azure-openai-key
+AZURE_OPENAI_54_ENDPOINT=https://your-resource.openai.azure.com
+AZURE_OPENAI_54_API_VERSION=2025-04-01-preview
+AZURE_OPENAI_54_DEPLOYMENT_NAME=gpt-5.4
+
+# 기존 AI Talent Azure OpenAI 호환 게이트웨이 fallback
 AI_TALENT_API_KEY=your-ai-talent-api-key
 AI_TALENT_ENDPOINT=https://skax.ai-talentlab.com
 AI_TALENT_API_VERSION=2024-12-01-preview
 
-# 게이트웨이가 없을 때만 사용하는 직접 OpenAI fallback
+# GPT-5.4 채팅 사용 시에도 기존 small 임베딩 검색에 사용
 OPENAI_API_KEY=your-openai-api-key
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
 SUPABASE_SERVICE_KEY=your-supabase-service-role-key
 
-# 검색·처리 설정 (CHAT_MODEL은 직접 OpenAI fallback에서만 사용)
+# 검색·처리 설정 (CHAT_MODEL은 직접 OpenAI 채팅 fallback에서만 사용)
 CHAT_MODEL=gpt-4o-mini
 EMBED_MODEL=text-embedding-3-small
 SIM_THRESHOLD=0.25
@@ -368,6 +374,10 @@ Python 3.12, 서울 리전, Fluid Compute와 최대 실행 시간은 `.python-ve
 ```powershell
 npx vercel@59.0.0 login
 npx vercel@59.0.0 link
+npx vercel@59.0.0 env add AZURE_OPENAI_54_API_KEY production --sensitive
+npx vercel@59.0.0 env add AZURE_OPENAI_54_ENDPOINT production
+npx vercel@59.0.0 env add AZURE_OPENAI_54_API_VERSION production
+npx vercel@59.0.0 env add AZURE_OPENAI_54_DEPLOYMENT_NAME production
 npx vercel@59.0.0 env add AI_TALENT_API_KEY production --sensitive
 npx vercel@59.0.0 env add AI_TALENT_ENDPOINT production
 npx vercel@59.0.0 env add AI_TALENT_API_VERSION production
@@ -394,8 +404,9 @@ Deployment Protection을 켠 뒤 공유합니다. 회사·팀의 지속 운영�
 Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연결하고 다음 값을
 환경변수로 등록합니다.
 
-- `AI_TALENT_API_KEY`, `AI_TALENT_ENDPOINT`, `AI_TALENT_API_VERSION` 또는
-  직접 연결용 `OPENAI_API_KEY`
+- `AZURE_OPENAI_54_API_KEY`, `AZURE_OPENAI_54_ENDPOINT`,
+  `AZURE_OPENAI_54_API_VERSION`, `AZURE_OPENAI_54_DEPLOYMENT_NAME` 또는 기존
+  `AI_TALENT_*`/직접 연결용 `OPENAI_API_KEY`
 - `SUPABASE_URL`
 - `SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SERVICE_KEY`
@@ -408,16 +419,18 @@ Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연�
 ## 보안 주의사항
 
 - `.env`는 Git에 커밋하지 않습니다.
-- `AI_TALENT_API_KEY`, `OPENAI_API_KEY`와 RLS를 우회하는 `SUPABASE_SERVICE_KEY`는 모두 서버 전용
+- `AZURE_OPENAI_54_API_KEY`, `AI_TALENT_API_KEY`, `OPENAI_API_KEY`와 RLS를 우회하는
+  `SUPABASE_SERVICE_KEY`는 모두 서버 전용
   비밀입니다. 브라우저·공유 기억·Git에 넣지 않습니다. 클라이언트에 공개할 수 있는
   값은 `SUPABASE_PUBLISHABLE_KEY`뿐입니다.
-- AI Talent 게이트웨이를 설정한 운영 채팅 모델은 `gpt-5.6-luna`를 사용합니다. 게이트웨이를
-  설정하지 않은 직접 OpenAI fallback은 `CHAT_MODEL` 값(기본 `gpt-4o-mini`)을 사용합니다.
-  기존 기억은 `text-embedding-3-small` 벡터로 저장되어 있으므로 전량 재임베딩하기 전에는 `EMBED_MODEL`을 다른 모델로
-  변경하지 않습니다.
+- `AZURE_OPENAI_54_*`를 설정하면 채팅은 해당 GPT-5.4 Azure 배포를 사용합니다. 설정하지
+  않으면 AI Talent `gpt-5.6-luna`, 그마저 없으면 `CHAT_MODEL`의 직접 OpenAI 순서입니다.
+  임베딩은 채팅과 분리되어 직접 OpenAI의 `text-embedding-3-small`을 우선 사용합니다.
+  기존 기억은 같은 small 벡터 공간으로 저장되어 있으므로 전량 재임베딩하기 전에는
+  `EMBED_MODEL`을 `text-embedding-3-large` 등 다른 모델로 변경하지 않습니다.
 - 비밀 키가 로그나 대화에 노출되면 즉시 폐기하고 새로 발급합니다.
-- 저장 내용과 질문은 처리 과정에서 AI Talent 게이트웨이(설정한 경우) 또는 OpenAI,
-  그리고 Supabase로 전송됩니다.
+- 저장 내용과 질문은 처리 과정에서 설정한 Azure OpenAI, AI Talent 게이트웨이 또는
+  OpenAI, 그리고 Supabase로 전송됩니다.
 - OpenAI와 AI Talent API 키 형태는 기억 저장 전에 차단됩니다. 다른 비밀번호도
   개인기억으로만 저장하고, 저장 내용이 처리 과정에서 AI Talent 게이트웨이(설정 시)
   또는 OpenAI와 Supabase로 전송된다는 점을 확인하세요.

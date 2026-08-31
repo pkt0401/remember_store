@@ -53,12 +53,23 @@ def signup_enabled_for_environment(is_production: bool) -> bool:
 AI_TALENT_CHAT_MODEL = "gpt-5.6-luna"
 
 
-def normalize_ai_talent_env_value(value: str) -> str:
-    """Remove whitespace and an accidental UTF-8 BOM from Vercel values."""
+def normalize_ai_env_value(value: str) -> str:
+    """Remove whitespace and an accidental UTF-8 BOM from AI env values."""
     return value.strip().lstrip("\ufeff").strip()
 
 
-def resolve_chat_model(ai_talent_endpoint: str, direct_chat_model: str) -> str:
+def normalize_ai_talent_env_value(value: str) -> str:
+    """Backward-compatible alias for the original gateway normalizer."""
+    return normalize_ai_env_value(value)
+
+
+def resolve_chat_model(
+    ai_talent_endpoint: str,
+    direct_chat_model: str,
+    azure_openai_54_deployment: str = "",
+) -> str:
+    if azure_openai_54_deployment:
+        return azure_openai_54_deployment
     if ai_talent_endpoint:
         return AI_TALENT_CHAT_MODEL
     return direct_chat_model.strip() or "gpt-4o-mini"
@@ -70,13 +81,38 @@ SUPABASE_PUBLISHABLE_KEY = (
     os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
 ).strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-AI_TALENT_API_KEY = normalize_ai_talent_env_value(
+AZURE_OPENAI_54_API_KEY = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_54_API_KEY", "")
+)
+AZURE_OPENAI_54_ENDPOINT = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_54_ENDPOINT", "")
+).rstrip("/")
+AZURE_OPENAI_54_API_VERSION = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_54_API_VERSION", "")
+)
+AZURE_OPENAI_54_DEPLOYMENT_NAME = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_54_DEPLOYMENT_NAME", "")
+    or os.getenv("AZURE_OPENAI_54_MODEL", "")
+)
+AZURE_OPENAI_EMBEDDING_API_KEY = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_EMBEDDING_API_KEY", "")
+)
+AZURE_OPENAI_EMBEDDING_ENDPOINT = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_EMBEDDING_ENDPOINT", "")
+).rstrip("/")
+AZURE_OPENAI_EMBEDDING_API_VERSION = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_EMBEDDING_API_VERSION", "")
+)
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME = normalize_ai_env_value(
+    os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "")
+)
+AI_TALENT_API_KEY = normalize_ai_env_value(
     os.getenv("AI_TALENT_API_KEY", "")
 )
-AI_TALENT_ENDPOINT = normalize_ai_talent_env_value(
+AI_TALENT_ENDPOINT = normalize_ai_env_value(
     os.getenv("AI_TALENT_ENDPOINT", "")
 ).rstrip("/")
-AI_TALENT_API_VERSION = normalize_ai_talent_env_value(
+AI_TALENT_API_VERSION = normalize_ai_env_value(
     os.getenv("AI_TALENT_API_VERSION", "2024-12-01-preview")
 )
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
@@ -87,8 +123,12 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", 
 CHAT_MODEL = resolve_chat_model(
     AI_TALENT_ENDPOINT,
     os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+    AZURE_OPENAI_54_DEPLOYMENT_NAME,
 )
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")  # 1536 dims
+EMBED_MODEL = (
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME
+    or os.getenv("EMBED_MODEL", "text-embedding-3-small").strip()
+)  # 1536 dims
 EMBED_DIMENSIONS = 1536  # Supabase memories.embedding is vector(1536)
 SIM_THRESHOLD = float(os.getenv("SIM_THRESHOLD", "0.25"))  # 이보다 낮으면 "없음" 처리
 SIMILAR_MEMORY_THRESHOLD = float(os.getenv("SIMILAR_MEMORY_THRESHOLD", "0.82"))
@@ -140,13 +180,122 @@ def create_ai_client(
     return OpenAI(api_key=openai_api_key, timeout=30.0, max_retries=2)
 
 
+def create_optional_azure_ai_client(
+    *,
+    api_key: str,
+    endpoint: str,
+    api_version: str,
+    deployment_name: str,
+    setting_prefix: str,
+):
+    values = {
+        f"{setting_prefix}_API_KEY": api_key,
+        f"{setting_prefix}_ENDPOINT": endpoint,
+        f"{setting_prefix}_API_VERSION": api_version,
+        f"{setting_prefix}_DEPLOYMENT_NAME": deployment_name,
+    }
+    if not any(values.values()):
+        return None
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise RuntimeError(
+            f"{setting_prefix} 설정이 불완전합니다: {', '.join(missing)}"
+        )
+    if not re.match(r"^https://[^/]+", endpoint):
+        raise RuntimeError(f"{setting_prefix}_ENDPOINT는 https:// URL이어야 합니다.")
+    return AzureOpenAI(
+        api_key=api_key,
+        azure_endpoint=endpoint,
+        api_version=api_version,
+        timeout=30.0,
+        max_retries=2,
+    )
+
+
+def create_chat_ai_client(
+    *,
+    openai_api_key: str,
+    azure_openai_54_api_key: str,
+    azure_openai_54_endpoint: str,
+    azure_openai_54_api_version: str,
+    azure_openai_54_deployment_name: str,
+    ai_talent_api_key: str,
+    ai_talent_endpoint: str,
+    ai_talent_api_version: str,
+):
+    azure_client = create_optional_azure_ai_client(
+        api_key=azure_openai_54_api_key,
+        endpoint=azure_openai_54_endpoint,
+        api_version=azure_openai_54_api_version,
+        deployment_name=azure_openai_54_deployment_name,
+        setting_prefix="AZURE_OPENAI_54",
+    )
+    if azure_client is not None:
+        return azure_client
+    return create_ai_client(
+        openai_api_key=openai_api_key,
+        ai_talent_api_key=ai_talent_api_key,
+        ai_talent_endpoint=ai_talent_endpoint,
+        ai_talent_api_version=ai_talent_api_version,
+    )
+
+
+def create_embedding_ai_client(
+    *,
+    openai_api_key: str,
+    azure_embedding_api_key: str,
+    azure_embedding_endpoint: str,
+    azure_embedding_api_version: str,
+    azure_embedding_deployment_name: str,
+    ai_talent_api_key: str,
+    ai_talent_endpoint: str,
+    ai_talent_api_version: str,
+):
+    azure_client = create_optional_azure_ai_client(
+        api_key=azure_embedding_api_key,
+        endpoint=azure_embedding_endpoint,
+        api_version=azure_embedding_api_version,
+        deployment_name=azure_embedding_deployment_name,
+        setting_prefix="AZURE_OPENAI_EMBEDDING",
+    )
+    if azure_client is not None:
+        return azure_client
+    if openai_api_key:
+        return create_ai_client(
+            openai_api_key=openai_api_key,
+            ai_talent_api_key="",
+            ai_talent_endpoint="",
+            ai_talent_api_version=ai_talent_api_version,
+        )
+    return create_ai_client(
+        openai_api_key="",
+        ai_talent_api_key=ai_talent_api_key,
+        ai_talent_endpoint=ai_talent_endpoint,
+        ai_talent_api_version=ai_talent_api_version,
+    )
+
+
 admin_sb = create_client(
     SUPABASE_URL,
     SUPABASE_SERVICE_KEY,
     options=ClientOptions(auto_refresh_token=False, persist_session=False),
 )
-oai = create_ai_client(
+oai = create_chat_ai_client(
     openai_api_key=OPENAI_API_KEY,
+    azure_openai_54_api_key=AZURE_OPENAI_54_API_KEY,
+    azure_openai_54_endpoint=AZURE_OPENAI_54_ENDPOINT,
+    azure_openai_54_api_version=AZURE_OPENAI_54_API_VERSION,
+    azure_openai_54_deployment_name=AZURE_OPENAI_54_DEPLOYMENT_NAME,
+    ai_talent_api_key=AI_TALENT_API_KEY,
+    ai_talent_endpoint=AI_TALENT_ENDPOINT,
+    ai_talent_api_version=AI_TALENT_API_VERSION,
+)
+embedding_oai = create_embedding_ai_client(
+    openai_api_key=OPENAI_API_KEY,
+    azure_embedding_api_key=AZURE_OPENAI_EMBEDDING_API_KEY,
+    azure_embedding_endpoint=AZURE_OPENAI_EMBEDDING_ENDPOINT,
+    azure_embedding_api_version=AZURE_OPENAI_EMBEDDING_API_VERSION,
+    azure_embedding_deployment_name=AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME,
     ai_talent_api_key=AI_TALENT_API_KEY,
     ai_talent_endpoint=AI_TALENT_ENDPOINT,
     ai_talent_api_version=AI_TALENT_API_VERSION,
@@ -1150,10 +1299,18 @@ VALID_SOURCES = {"slack", "email", "note"}
 OPENAI_API_KEY_PATTERN = re.compile(
     r"(?:^|[^A-Za-z0-9_-])((?:sk|atl)-[A-Za-z0-9_-]{20,})(?=$|[^A-Za-z0-9_-])"
 )
+AZURE_API_KEY_ASSIGNMENT_PATTERN = re.compile(
+    r"\b(?:AZURE_OPENAI(?:_[A-Z0-9]+)*_API_KEY|AZURE_SPEECH_API_KEY)"
+    r"\s*[:=]\s*[\"']?[A-Za-z0-9_-]{20,}",
+    re.IGNORECASE,
+)
 
 
 def contains_openai_api_key(value: str) -> bool:
-    return bool(OPENAI_API_KEY_PATTERN.search(value))
+    return bool(
+        OPENAI_API_KEY_PATTERN.search(value)
+        or AZURE_API_KEY_ASSIGNMENT_PATTERN.search(value)
+    )
 
 
 def normalize_source(value: object) -> str:
@@ -1165,7 +1322,7 @@ def today_kst() -> date:
     return datetime.now(KST).date()
 
 def embed(texts: list[str]) -> list[list[float]]:
-    resp = oai.embeddings.create(
+    resp = embedding_oai.embeddings.create(
         model=EMBED_MODEL,
         input=texts,
         dimensions=EMBED_DIMENSIONS,
@@ -2125,7 +2282,8 @@ def ingest(req: IngestRequest, request: Request):
         raise HTTPException(
             400,
             "AI API 키처럼 보이는 값은 기억으로 저장할 수 없습니다. "
-            "서버 환경변수 AI_TALENT_API_KEY 또는 OPENAI_API_KEY에만 보관하세요.",
+            "서버 환경변수 AZURE_OPENAI_54_API_KEY, AI_TALENT_API_KEY "
+            "또는 OPENAI_API_KEY에만 보관하세요.",
         )
 
     user = current_user(request)

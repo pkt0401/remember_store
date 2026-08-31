@@ -22,6 +22,15 @@ os.environ["SUPABASE_URL"] = "https://example.supabase.co"
 os.environ["SUPABASE_SERVICE_KEY"] = "test-service-key"
 os.environ["SUPABASE_PUBLISHABLE_KEY"] = "test-publishable-key"
 os.environ["OPENAI_API_KEY"] = "sk-test"
+os.environ["AZURE_OPENAI_54_API_KEY"] = ""
+os.environ["AZURE_OPENAI_54_ENDPOINT"] = ""
+os.environ["AZURE_OPENAI_54_API_VERSION"] = ""
+os.environ["AZURE_OPENAI_54_DEPLOYMENT_NAME"] = ""
+os.environ["AZURE_OPENAI_54_MODEL"] = ""
+os.environ["AZURE_OPENAI_EMBEDDING_API_KEY"] = ""
+os.environ["AZURE_OPENAI_EMBEDDING_ENDPOINT"] = ""
+os.environ["AZURE_OPENAI_EMBEDDING_API_VERSION"] = ""
+os.environ["AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME"] = ""
 os.environ["AI_TALENT_API_KEY"] = ""
 os.environ["AI_TALENT_ENDPOINT"] = ""
 os.environ["AI_TALENT_API_VERSION"] = "2024-12-01-preview"
@@ -47,6 +56,14 @@ def test_chat_model_uses_luna_when_gateway_is_configured():
 def test_chat_model_preserves_direct_openai_fallback_without_gateway():
     assert main.resolve_chat_model("", "gpt-4o-mini") == "gpt-4o-mini"
     assert main.CHAT_MODEL == "gpt-4o-mini"
+
+
+def test_chat_model_prefers_gpt54_azure_deployment():
+    assert main.resolve_chat_model(
+        "https://skax.ai-talentlab.com",
+        "gpt-4o-mini",
+        "gpt-5.4",
+    ) == "gpt-5.4"
 
 
 def _user(user_id=ALICE_ID, *, role="editor", email=None):
@@ -116,6 +133,12 @@ def _assert_private_no_store(response, *, no_transform=False):
 )
 def test_normalize_ai_talent_env_value_removes_bom_and_whitespace(raw, expected):
     assert main.normalize_ai_talent_env_value(raw) == expected
+
+
+def test_normalize_ai_env_value_handles_azure_values():
+    assert main.normalize_ai_env_value(" \ufeffhttps://example.openai.azure.com/ ") == (
+        "https://example.openai.azure.com/"
+    )
 
 
 def test_create_ai_client_prefers_ai_talent_gateway(monkeypatch):
@@ -210,7 +233,89 @@ def test_create_ai_client_rejects_missing_all_credentials():
         )
 
 
-def test_azure_sdk_serializes_deployment_path_and_gpt5_limit():
+def test_create_chat_ai_client_prefers_gpt54_azure(monkeypatch):
+    captured = {}
+    expected_client = object()
+
+    def fake_azure_openai(**kwargs):
+        captured.update(kwargs)
+        return expected_client
+
+    monkeypatch.setattr(main, "AzureOpenAI", fake_azure_openai)
+
+    client = main.create_chat_ai_client(
+        openai_api_key="direct-test-key",
+        azure_openai_54_api_key="azure-test-key",
+        azure_openai_54_endpoint="https://example.openai.azure.com",
+        azure_openai_54_api_version="2025-04-01-preview",
+        azure_openai_54_deployment_name="gpt-5.4",
+        ai_talent_api_key="legacy-test-key",
+        ai_talent_endpoint="https://skax.ai-talentlab.com",
+        ai_talent_api_version="2024-12-01-preview",
+    )
+
+    assert client is expected_client
+    assert captured == {
+        "api_key": "azure-test-key",
+        "azure_endpoint": "https://example.openai.azure.com",
+        "api_version": "2025-04-01-preview",
+        "timeout": 30.0,
+        "max_retries": 2,
+    }
+
+
+def test_create_embedding_ai_client_prefers_direct_openai(monkeypatch):
+    captured = {}
+    expected_client = object()
+
+    def fake_openai(**kwargs):
+        captured.update(kwargs)
+        return expected_client
+
+    monkeypatch.setattr(main, "OpenAI", fake_openai)
+
+    client = main.create_embedding_ai_client(
+        openai_api_key="direct-test-key",
+        azure_embedding_api_key="",
+        azure_embedding_endpoint="",
+        azure_embedding_api_version="",
+        azure_embedding_deployment_name="",
+        ai_talent_api_key="legacy-test-key",
+        ai_talent_endpoint="https://skax.ai-talentlab.com",
+        ai_talent_api_version="2024-12-01-preview",
+    )
+
+    assert client is expected_client
+    assert captured == {
+        "api_key": "direct-test-key",
+        "timeout": 30.0,
+        "max_retries": 2,
+    }
+
+
+def test_optional_azure_client_rejects_partial_gpt54_config():
+    with pytest.raises(RuntimeError, match="AZURE_OPENAI_54_API_VERSION"):
+        main.create_optional_azure_ai_client(
+            api_key="azure-test-key",
+            endpoint="https://example.openai.azure.com",
+            api_version="",
+            deployment_name="gpt-5.4",
+            setting_prefix="AZURE_OPENAI_54",
+        )
+
+
+def test_optional_azure_client_rejects_non_https_endpoint():
+    with pytest.raises(RuntimeError, match="https://"):
+        main.create_optional_azure_ai_client(
+            api_key="azure-test-key",
+            endpoint="example.openai.azure.com",
+            api_version="2025-04-01-preview",
+            deployment_name="gpt-5.4",
+            setting_prefix="AZURE_OPENAI_54",
+        )
+
+
+def test_gpt54_azure_sdk_serializes_deployment_path_and_json_format():
     requests = []
 
     def handle_request(request):
@@ -222,7 +327,7 @@ def test_azure_sdk_serializes_deployment_path_and_gpt5_limit():
                 "id": "chatcmpl-test",
                 "object": "chat.completion",
                 "created": 0,
-                "model": "gpt-5.6-luna",
+                "model": "gpt-5.4",
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": "ok"},
@@ -233,26 +338,29 @@ def test_azure_sdk_serializes_deployment_path_and_gpt5_limit():
 
     with httpx.Client(transport=httpx.MockTransport(handle_request)) as http_client:
         with main.AzureOpenAI(
-            api_key="gateway-test-key",
-            azure_endpoint="https://skax.ai-talentlab.com",
-            api_version="2024-12-01-preview",
+            api_key="azure-test-key",
+            azure_endpoint="https://example.openai.azure.com",
+            api_version="2025-04-01-preview",
             http_client=http_client,
         ) as client:
             response = client.chat.completions.create(
-                model="gpt-5.6-luna",
+                model="gpt-5.4",
                 messages=[{"role": "user", "content": "안녕"}],
                 max_completion_tokens=32,
+                response_format={"type": "json_object"},
             )
 
     assert response.choices[0].message.content == "ok"
     assert len(requests) == 1
     request = requests[0]
     assert request.url.path == (
-        "/openai/deployments/gpt-5.6-luna/chat/completions"
+        "/openai/deployments/gpt-5.4/chat/completions"
     )
-    assert request.url.params["api-version"] == "2024-12-01-preview"
-    assert request.headers["api-key"] == "gateway-test-key"
-    assert json.loads(request.content)["max_completion_tokens"] == 32
+    assert request.url.params["api-version"] == "2025-04-01-preview"
+    assert request.headers["api-key"] == "azure-test-key"
+    payload = json.loads(request.content)
+    assert payload["max_completion_tokens"] == 32
+    assert payload["response_format"] == {"type": "json_object"}
 
 
 def test_azure_sdk_serializes_embedding_deployment_and_dimensions():
@@ -299,17 +407,17 @@ def test_azure_sdk_serializes_embedding_deployment_and_dimensions():
     assert json.loads(request.content)["dimensions"] == 1536
 
 
-def test_azure_sdk_parses_streaming_chat_response():
+def test_gpt54_azure_sdk_parses_streaming_chat_response():
     requests = []
 
     def handle_request(request):
         requests.append(request)
         body = (
             'data: {"id":"chatcmpl-test","object":"chat.completion.chunk",'
-            '"created":0,"model":"gpt-5.6-luna","choices":[{"index":0,'
+            '"created":0,"model":"gpt-5.4","choices":[{"index":0,'
             '"delta":{"content":"안녕"},"finish_reason":null}]}\n\n'
             'data: {"id":"chatcmpl-test","object":"chat.completion.chunk",'
-            '"created":0,"model":"gpt-5.6-luna","choices":[{"index":0,'
+            '"created":0,"model":"gpt-5.4","choices":[{"index":0,'
             '"delta":{},"finish_reason":"stop"}]}\n\n'
             "data: [DONE]\n\n"
         )
@@ -322,13 +430,13 @@ def test_azure_sdk_parses_streaming_chat_response():
 
     with httpx.Client(transport=httpx.MockTransport(handle_request)) as http_client:
         with main.AzureOpenAI(
-            api_key="gateway-test-key",
-            azure_endpoint="https://skax.ai-talentlab.com",
-            api_version="2024-12-01-preview",
+            api_key="azure-test-key",
+            azure_endpoint="https://example.openai.azure.com",
+            api_version="2025-04-01-preview",
             http_client=http_client,
         ) as client:
             chunks = list(client.chat.completions.create(
-                model="gpt-5.6-luna",
+                model="gpt-5.4",
                 messages=[{"role": "user", "content": "안녕"}],
                 max_completion_tokens=32,
                 stream=True,
@@ -343,8 +451,10 @@ def test_azure_sdk_parses_streaming_chat_response():
     assert len(requests) == 1
     request = requests[0]
     assert request.url.path == (
-        "/openai/deployments/gpt-5.6-luna/chat/completions"
+        "/openai/deployments/gpt-5.4/chat/completions"
     )
+    assert request.url.params["api-version"] == "2025-04-01-preview"
+    assert request.headers["api-key"] == "azure-test-key"
     assert json.loads(request.content)["stream"] is True
 
 
@@ -358,7 +468,7 @@ def test_embed_requests_schema_compatible_dimensions(monkeypatch):
 
     monkeypatch.setattr(
         main,
-        "oai",
+        "embedding_oai",
         SimpleNamespace(embeddings=FakeEmbeddings()),
     )
     monkeypatch.setattr(main, "EMBED_MODEL", "text-embedding-3-small")
@@ -379,7 +489,7 @@ def test_embed_rejects_wrong_provider_dimension(monkeypatch):
 
     monkeypatch.setattr(
         main,
-        "oai",
+        "embedding_oai",
         SimpleNamespace(embeddings=WrongSizedEmbeddings()),
     )
     monkeypatch.setattr(main, "EMBED_DIMENSIONS", 2)
@@ -395,7 +505,7 @@ def test_embed_rejects_missing_provider_result(monkeypatch):
 
     monkeypatch.setattr(
         main,
-        "oai",
+        "embedding_oai",
         SimpleNamespace(embeddings=MissingEmbeddings()),
     )
     monkeypatch.setattr(main, "EMBED_DIMENSIONS", 1536)
@@ -409,6 +519,10 @@ def test_embed_rejects_missing_provider_result(monkeypatch):
     [
         ("key: sk-" + "x" * 32, True),
         ("key: atl-" + "x" * 32, True),
+        ("AZURE_OPENAI_54_API_KEY=" + "x" * 64, True),
+        ("AZURE_OPENAI_API_KEY: " + "x" * 64, True),
+        ("AZURE_SPEECH_API_KEY='" + "x" * 32 + "'", True),
+        ("AZURE_OPENAI_54_API_VERSION=2025-04-01-preview", False),
         ("프로젝트 ATL-123", False),
     ],
 )
