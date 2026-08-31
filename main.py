@@ -3526,7 +3526,12 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 @app.get("/")
 def index():
-    return FileResponse(BASE_DIR / "static" / "index.html")
+    # The app shell carries the whole frontend, so a heuristically cached
+    # copy hides every deploy until the browser happens to expire it. The
+    # ETag still turns the revalidation into a 304.
+    response = FileResponse(BASE_DIR / "static" / "index.html")
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/auth-architecture")
