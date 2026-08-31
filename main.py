@@ -50,7 +50,7 @@ def signup_enabled_for_environment(is_production: bool) -> bool:
     return setting in {"1", "true", "yes", "on"}
 
 
-AI_TALENT_CHAT_MODEL = "gpt-5.4"
+AI_TALENT_CHAT_MODEL = "gpt-5.6-luna"
 
 
 def resolve_chat_model(ai_talent_endpoint: str, direct_chat_model: str) -> str:
@@ -2027,7 +2027,7 @@ def contextualize_search_question(question: str, history: Optional[list[dict]]) 
     try:
         response = oai.chat.completions.create(
             model=CHAT_MODEL,
-            max_completion_tokens=120,
+            max_completion_tokens=512,
             messages=[
                 {"role": "system", "content": REWRITE_SYSTEM},
                 *turns,

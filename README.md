@@ -411,7 +411,7 @@ Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연�
 - `AI_TALENT_API_KEY`, `OPENAI_API_KEY`와 RLS를 우회하는 `SUPABASE_SERVICE_KEY`는 모두 서버 전용
   비밀입니다. 브라우저·공유 기억·Git에 넣지 않습니다. 클라이언트에 공개할 수 있는
   값은 `SUPABASE_PUBLISHABLE_KEY`뿐입니다.
-- AI Talent 게이트웨이를 설정한 운영 채팅 모델은 `gpt-5.4`를 사용합니다. 게이트웨이를
+- AI Talent 게이트웨이를 설정한 운영 채팅 모델은 `gpt-5.6-luna`를 사용합니다. 게이트웨이를
   설정하지 않은 직접 OpenAI fallback은 `CHAT_MODEL` 값(기본 `gpt-4o-mini`)을 사용합니다.
   기존 기억은 `text-embedding-3-small` 벡터로 저장되어 있으므로 전량 재임베딩하기 전에는 `EMBED_MODEL`을 다른 모델로
   변경하지 않습니다.

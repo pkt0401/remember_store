@@ -37,11 +37,11 @@ ALICE_ID = "11111111-1111-4111-8111-111111111111"
 BOB_ID = "22222222-2222-4222-8222-222222222222"
 
 
-def test_chat_model_uses_best_ai_talent_model_when_gateway_is_configured():
+def test_chat_model_uses_luna_when_gateway_is_configured():
     assert main.resolve_chat_model(
         "https://skax.ai-talentlab.com",
         "gpt-4o-mini",
-    ) == "gpt-5.4"
+    ) == "gpt-5.6-luna"
 
 
 def test_chat_model_preserves_direct_openai_fallback_without_gateway():
@@ -210,7 +210,7 @@ def test_azure_sdk_serializes_deployment_path_and_gpt5_limit():
                 "id": "chatcmpl-test",
                 "object": "chat.completion",
                 "created": 0,
-                "model": "gpt-5.4",
+                "model": "gpt-5.6-luna",
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": "ok"},
@@ -227,7 +227,7 @@ def test_azure_sdk_serializes_deployment_path_and_gpt5_limit():
             http_client=http_client,
         ) as client:
             response = client.chat.completions.create(
-                model="gpt-5.4",
+                model="gpt-5.6-luna",
                 messages=[{"role": "user", "content": "안녕"}],
                 max_completion_tokens=32,
             )
@@ -236,7 +236,7 @@ def test_azure_sdk_serializes_deployment_path_and_gpt5_limit():
     assert len(requests) == 1
     request = requests[0]
     assert request.url.path == (
-        "/openai/deployments/gpt-5.4/chat/completions"
+        "/openai/deployments/gpt-5.6-luna/chat/completions"
     )
     assert request.url.params["api-version"] == "2024-12-01-preview"
     assert request.headers["api-key"] == "gateway-test-key"
@@ -294,10 +294,10 @@ def test_azure_sdk_parses_streaming_chat_response():
         requests.append(request)
         body = (
             'data: {"id":"chatcmpl-test","object":"chat.completion.chunk",'
-            '"created":0,"model":"gpt-5.4","choices":[{"index":0,'
+            '"created":0,"model":"gpt-5.6-luna","choices":[{"index":0,'
             '"delta":{"content":"안녕"},"finish_reason":null}]}\n\n'
             'data: {"id":"chatcmpl-test","object":"chat.completion.chunk",'
-            '"created":0,"model":"gpt-5.4","choices":[{"index":0,'
+            '"created":0,"model":"gpt-5.6-luna","choices":[{"index":0,'
             '"delta":{},"finish_reason":"stop"}]}\n\n'
             "data: [DONE]\n\n"
         )
@@ -316,7 +316,7 @@ def test_azure_sdk_parses_streaming_chat_response():
             http_client=http_client,
         ) as client:
             chunks = list(client.chat.completions.create(
-                model="gpt-5.4",
+                model="gpt-5.6-luna",
                 messages=[{"role": "user", "content": "안녕"}],
                 max_completion_tokens=32,
                 stream=True,
@@ -331,7 +331,7 @@ def test_azure_sdk_parses_streaming_chat_response():
     assert len(requests) == 1
     request = requests[0]
     assert request.url.path == (
-        "/openai/deployments/gpt-5.4/chat/completions"
+        "/openai/deployments/gpt-5.6-luna/chat/completions"
     )
     assert json.loads(request.content)["stream"] is True
 
@@ -1723,7 +1723,7 @@ def test_normalize_parsed_payload_chunks_long_fallback():
 def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
     monkeypatch,
 ):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
     text = """[기록 유형] 업무
 [카테고리] 비용 처리 가이드
 [제목] 2026년 8월 ATL AI 도구 사용료 처리
@@ -1790,7 +1790,7 @@ def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
         "41000069-001",
         "CL/AI",
     ]
-    assert model_calls[0]["model"] == "gpt-5.4"
+    assert model_calls[0]["model"] == "gpt-5.6-luna"
     assert model_calls[0]["max_completion_tokens"] == 4000
     assert "max_tokens" not in model_calls[0]
 
@@ -3409,7 +3409,7 @@ def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup(api_key)
 
 
 def test_contextualize_search_question_rewrites_generic_detail_followup(monkeypatch):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
     calls = []
 
     class FakeCompletions:
@@ -3439,8 +3439,8 @@ def test_contextualize_search_question_rewrites_generic_detail_followup(monkeypa
         "ATL AI 도구 사용료의 프로젝트 코드와 비용 계정을 구체적으로 알려줘"
     )
     assert len(calls) == 1
-    assert calls[0]["model"] == "gpt-5.4"
-    assert calls[0]["max_completion_tokens"] == 120
+    assert calls[0]["model"] == "gpt-5.6-luna"
+    assert calls[0]["max_completion_tokens"] == 512
     assert "max_tokens" not in calls[0]
     assert "temperature" not in calls[0]
     assert calls[0]["messages"][-1] == {
@@ -3933,7 +3933,7 @@ def test_no_information_detector_rejects_partial_grounded_answers():
 def test_nonstream_replaces_short_no_information_answer_with_grounded_answer(
     monkeypatch,
 ):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
     grounded = (
         "**2026년 8월 ATL AI 도구 사용료 처리**\n"
         "- 프로젝트: 41000069-001 / 26년 AI Talent Lab 운영\n"
@@ -3970,7 +3970,7 @@ def test_nonstream_replaces_short_no_information_answer_with_grounded_answer(
     class FalseNegativeCompletions:
         def create(self, **kwargs):
             assert kwargs.get("stream") is not True
-            assert kwargs["model"] == "gpt-5.4"
+            assert kwargs["model"] == "gpt-5.6-luna"
             assert kwargs["max_completion_tokens"] == 1500
             assert "max_tokens" not in kwargs
             events.append(("model", False))
@@ -4094,7 +4094,7 @@ def test_prepare_answer_searches_shared_plus_requesting_users_personal_memories(
 
 
 def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
     prepared = {
         "fallback": None,
         "messages": [{"role": "user", "content": "question"}],
@@ -4126,7 +4126,7 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs):
             assert kwargs["stream"] is True
-            assert kwargs["model"] == "gpt-5.4"
+            assert kwargs["model"] == "gpt-5.6-luna"
             assert kwargs["max_completion_tokens"] == 1500
             assert "max_tokens" not in kwargs
             return iter(chunks)
