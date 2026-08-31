@@ -1757,10 +1757,107 @@
     #log, .ask-bar { padding-left: 16px; padding-right: 16px; }
   }
 
+  /* ==========================================================================
+     SHOJI GATE · 障子 — on login the doors slide shut, then open onto the room
+     ========================================================================== */
+  #shojiGate {
+    position: fixed;
+    inset: 0;
+    z-index: 400;
+    display: none;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  #shojiGate.is-active { display: block; pointer-events: auto; }
+
+  /* Warm andon lamplight behind the paper, spilling through the parting seam */
+  .shoji-light {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    opacity: 0;
+    background:
+      radial-gradient(ellipse 42% 90% at 50% 50%, rgba(255, 236, 189, 0.88), transparent 70%),
+      linear-gradient(180deg, rgba(39, 94, 67, 0.10), rgba(27, 38, 32, 0.18));
+    transition: opacity 620ms ease;
+  }
+  #shojiGate.is-closed .shoji-light { opacity: 1; }
+
+  .shoji-panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 51%;
+    z-index: 1;
+    background-color: #F6F1E2;
+    background-image:
+      repeating-linear-gradient(90deg, transparent 0 76px, rgba(74, 57, 34, 0.50) 76px 79px),
+      repeating-linear-gradient(0deg, transparent 0 60px, rgba(74, 57, 34, 0.42) 60px 63px),
+      radial-gradient(ellipse 120% 80% at 50% 45%, rgba(255, 246, 219, 0.96), rgba(226, 214, 186, 0.92));
+    box-shadow: 0 0 80px -10px rgba(27, 38, 32, 0.45);
+    transition: transform 860ms cubic-bezier(0.34, 0.03, 0.18, 1);
+    will-change: transform;
+  }
+  .shoji-left  { left: 0;  transform: translate3d(-101%, 0, 0); }
+  .shoji-right { right: 0; transform: translate3d(101%, 0, 0); }
+  #shojiGate.is-closed .shoji-left,
+  #shojiGate.is-closed .shoji-right { transform: translate3d(0, 0, 0); }
+
+  /* Leading stile — the thick vertical frame on the meeting edge */
+  .shoji-panel::before {
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 18px;
+    background: linear-gradient(90deg, #6B5335, #4A3A28);
+  }
+  .shoji-left::before  { right: 0; box-shadow: -14px 0 26px -18px rgba(27, 38, 32, 0.7); }
+  .shoji-right::before { left: 0;  box-shadow: 14px 0 26px -18px rgba(27, 38, 32, 0.7); }
+
+  /* 引手 hikite — the recessed finger pull */
+  .shoji-panel::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: 13px;
+    height: 54px;
+    margin-top: -27px;
+    border-radius: 7px;
+    background: linear-gradient(180deg, #2E2418, #4A3A28);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.25);
+  }
+  .shoji-left::after  { right: 30px; }
+  .shoji-right::after { left: 30px; }
+
+  /* 鴨居 / 敷居 — the head jamb and threshold the doors run in */
+  #shojiGate::before, #shojiGate::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    height: 22px;
+    z-index: 2;
+    background: linear-gradient(180deg, #5A462C, #3A2E1E);
+  }
+  #shojiGate::before { top: 0; box-shadow: 0 8px 18px -10px rgba(27, 38, 32, 0.7); }
+  #shojiGate::after  { bottom: 0; box-shadow: 0 -8px 18px -10px rgba(27, 38, 32, 0.7); }
+
+  @media (max-width: 640px) {
+    .shoji-panel {
+      background-image:
+        repeating-linear-gradient(90deg, transparent 0 48px, rgba(74, 57, 34, 0.50) 48px 50px),
+        repeating-linear-gradient(0deg, transparent 0 44px, rgba(74, 57, 34, 0.42) 44px 46px),
+        radial-gradient(ellipse 120% 80% at 50% 45%, rgba(255, 246, 219, 0.96), rgba(226, 214, 186, 0.92));
+    }
+    .shoji-panel::before { width: 12px; }
+    .shoji-left::after  { right: 20px; }
+    .shoji-right::after { left: 20px; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
     .approval-refresh:hover { transform: none; }
     #sakuraCanvas { display: none; }
+    #shojiGate { display: none !important; }
   }
 
   @media (forced-colors: active) {
@@ -1784,6 +1881,12 @@
   <span class="music-wave" aria-hidden="true"><i></i><i></i><i></i></span>
 </button>
 <div id="ytPlayerBox" aria-hidden="true"><div id="ytPlayer"></div></div>
+
+<div id="shojiGate" aria-hidden="true">
+  <div class="shoji-light"></div>
+  <div class="shoji-panel shoji-left"></div>
+  <div class="shoji-panel shoji-right"></div>
+</div>
 
 
 <div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
@@ -3689,6 +3792,38 @@ function responseErrorMessage(data, fallback) {
   return (data && data.message) || fallback;
 }
 
+const SHOJI_SLIDE_MS = 860;
+const SHOJI_HOLD_MS = 300;
+
+function shojiPause(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 障子 — the doors slide shut over the entrance, the room is made ready behind
+// them, then they part onto it. `reveal` runs while the screen is covered, so
+// the login card swapping for the app is never seen. Motion-reduced visitors
+// just get the swap.
+async function openThroughShoji(reveal) {
+  const gate = $("shojiGate");
+  if (!gate || !window.matchMedia("(prefers-reduced-motion: no-preference)").matches) {
+    await reveal();
+    return;
+  }
+  gate.classList.add("is-active");
+  void gate.offsetWidth; // flush the open position so the slide-in animates
+  gate.classList.add("is-closed");
+  try {
+    await shojiPause(SHOJI_SLIDE_MS);
+    await reveal();
+    await shojiPause(SHOJI_HOLD_MS);
+  } finally {
+    gate.classList.remove("is-closed");
+    setTimeout(() => {
+      if (!gate.classList.contains("is-closed")) gate.classList.remove("is-active");
+    }, SHOJI_SLIDE_MS);
+  }
+}
+
 async function doLogin() {
   const username = $("usernameBox").value.trim();
   const pw = $("pwBox").value;
@@ -3706,11 +3841,13 @@ async function doLogin() {
     if (!r.ok) {
       throw new Error(responseErrorMessage(data, "아이디 또는 비밀번호가 맞지 않아요."));
     }
-    if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
-    $("loginOverlay").classList.remove("show");
-    $("pwBox").value = "";
-    await Promise.all([loadRecent(), loadSharedProposals(), loadSharedDeletionProposals()]);
-    renderChatHistory();
+    await openThroughShoji(async () => {
+      if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
+      $("loginOverlay").classList.remove("show");
+      $("pwBox").value = "";
+      await Promise.all([loadRecent(), loadSharedProposals(), loadSharedDeletionProposals()]);
+      renderChatHistory();
+    });
   } catch (error) {
     $("loginErr").textContent = error.message;
     $("pwBox").value = "";
