@@ -50,7 +50,7 @@ def signup_enabled_for_environment(is_production: bool) -> bool:
     return setting in {"1", "true", "yes", "on"}
 
 
-AI_TALENT_CHAT_MODEL = "gpt-5.6-luna"
+AI_TALENT_CHAT_MODEL = "gpt-5.4"
 
 
 def normalize_ai_env_value(value: str) -> str:

@@ -46,11 +46,11 @@ ALICE_ID = "11111111-1111-4111-8111-111111111111"
 BOB_ID = "22222222-2222-4222-8222-222222222222"
 
 
-def test_chat_model_uses_luna_when_gateway_is_configured():
+def test_chat_model_uses_gpt54_when_gateway_is_configured():
     assert main.resolve_chat_model(
         "https://skax.ai-talentlab.com",
         "gpt-4o-mini",
-    ) == "gpt-5.6-luna"
+    ) == "gpt-5.4"
 
 
 def test_chat_model_preserves_direct_openai_fallback_without_gateway():
@@ -153,6 +153,39 @@ def test_create_ai_client_prefers_ai_talent_gateway(monkeypatch):
 
     client = main.create_ai_client(
         openai_api_key="direct-test-key",
+        ai_talent_api_key="gateway-test-key",
+        ai_talent_endpoint="https://skax.ai-talentlab.com",
+        ai_talent_api_version="2024-12-01-preview",
+    )
+
+    assert client is expected_client
+    assert captured == {
+        "api_key": "gateway-test-key",
+        "azure_endpoint": "https://skax.ai-talentlab.com",
+        "api_version": "2024-12-01-preview",
+        "timeout": 30.0,
+        "max_retries": 2,
+    }
+
+
+def test_create_chat_ai_client_uses_ai_talent_gateway_without_direct_azure(
+    monkeypatch,
+):
+    captured = {}
+    expected_client = object()
+
+    def fake_azure_openai(**kwargs):
+        captured.update(kwargs)
+        return expected_client
+
+    monkeypatch.setattr(main, "AzureOpenAI", fake_azure_openai)
+
+    client = main.create_chat_ai_client(
+        openai_api_key="direct-test-key",
+        azure_openai_54_api_key="",
+        azure_openai_54_endpoint="",
+        azure_openai_54_api_version="",
+        azure_openai_54_deployment_name="",
         ai_talent_api_key="gateway-test-key",
         ai_talent_endpoint="https://skax.ai-talentlab.com",
         ai_talent_api_version="2024-12-01-preview",
@@ -1849,7 +1882,7 @@ def test_normalize_parsed_payload_chunks_long_fallback():
 def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
     monkeypatch,
 ):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     text = """[기록 유형] 업무
 [카테고리] 비용 처리 가이드
 [제목] 2026년 8월 ATL AI 도구 사용료 처리
@@ -1916,7 +1949,7 @@ def test_parse_pasted_text_preserves_structured_fields_and_explicit_tags(
         "41000069-001",
         "CL/AI",
     ]
-    assert model_calls[0]["model"] == "gpt-5.6-luna"
+    assert model_calls[0]["model"] == "gpt-5.4"
     assert model_calls[0]["max_completion_tokens"] == 4000
     assert "max_tokens" not in model_calls[0]
 
@@ -3535,7 +3568,7 @@ def test_update_rejects_openai_api_key_nested_in_metadata_before_lookup(api_key)
 
 
 def test_contextualize_search_question_rewrites_generic_detail_followup(monkeypatch):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     calls = []
 
     class FakeCompletions:
@@ -3565,7 +3598,7 @@ def test_contextualize_search_question_rewrites_generic_detail_followup(monkeypa
         "ATL AI 도구 사용료의 프로젝트 코드와 비용 계정을 구체적으로 알려줘"
     )
     assert len(calls) == 1
-    assert calls[0]["model"] == "gpt-5.6-luna"
+    assert calls[0]["model"] == "gpt-5.4"
     assert calls[0]["max_completion_tokens"] == 512
     assert "max_tokens" not in calls[0]
     assert "temperature" not in calls[0]
@@ -4059,7 +4092,7 @@ def test_no_information_detector_rejects_partial_grounded_answers():
 def test_nonstream_replaces_short_no_information_answer_with_grounded_answer(
     monkeypatch,
 ):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     grounded = (
         "**2026년 8월 ATL AI 도구 사용료 처리**\n"
         "- 프로젝트: 41000069-001 / 26년 AI Talent Lab 운영\n"
@@ -4096,7 +4129,7 @@ def test_nonstream_replaces_short_no_information_answer_with_grounded_answer(
     class FalseNegativeCompletions:
         def create(self, **kwargs):
             assert kwargs.get("stream") is not True
-            assert kwargs["model"] == "gpt-5.6-luna"
+            assert kwargs["model"] == "gpt-5.4"
             assert kwargs["max_completion_tokens"] == 1500
             assert "max_tokens" not in kwargs
             events.append(("model", False))
@@ -4220,7 +4253,7 @@ def test_prepare_answer_searches_shared_plus_requesting_users_personal_memories(
 
 
 def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
-    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.6-luna")
+    monkeypatch.setattr(main, "CHAT_MODEL", "gpt-5.4")
     prepared = {
         "fallback": None,
         "messages": [{"role": "user", "content": "question"}],
@@ -4252,7 +4285,7 @@ def test_stream_emits_meta_deltas_and_done_without_network(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs):
             assert kwargs["stream"] is True
-            assert kwargs["model"] == "gpt-5.6-luna"
+            assert kwargs["model"] == "gpt-5.4"
             assert kwargs["max_completion_tokens"] == 1500
             assert "max_tokens" not in kwargs
             return iter(chunks)

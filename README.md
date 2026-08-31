@@ -424,7 +424,7 @@ Render, Railway 등 Docker를 지원하는 서비스에서는 저장소를 연�
   비밀입니다. 브라우저·공유 기억·Git에 넣지 않습니다. 클라이언트에 공개할 수 있는
   값은 `SUPABASE_PUBLISHABLE_KEY`뿐입니다.
 - `AZURE_OPENAI_54_*`를 설정하면 채팅은 해당 GPT-5.4 Azure 배포를 사용합니다. 설정하지
-  않으면 AI Talent `gpt-5.6-luna`, 그마저 없으면 `CHAT_MODEL`의 직접 OpenAI 순서입니다.
+  않으면 AI Talent `gpt-5.4`, 그마저 없으면 `CHAT_MODEL`의 직접 OpenAI 순서입니다.
   임베딩은 채팅과 분리되어 직접 OpenAI의 `text-embedding-3-small`을 우선 사용합니다.
   기존 기억은 같은 small 벡터 공간으로 저장되어 있으므로 전량 재임베딩하기 전에는
   `EMBED_MODEL`을 `text-embedding-3-large` 등 다른 모델로 변경하지 않습니다.
