@@ -1779,7 +1779,7 @@
     background:
       radial-gradient(ellipse 42% 90% at 50% 50%, rgba(255, 236, 189, 0.88), transparent 70%),
       linear-gradient(180deg, rgba(39, 94, 67, 0.10), rgba(27, 38, 32, 0.18));
-    transition: opacity 620ms ease;
+    transition: opacity 360ms ease;
   }
   #shojiGate.is-closed .shoji-light { opacity: 1; }
 
@@ -1795,13 +1795,15 @@
       repeating-linear-gradient(0deg, transparent 0 60px, rgba(74, 57, 34, 0.42) 60px 63px),
       radial-gradient(ellipse 120% 80% at 50% 45%, rgba(255, 246, 219, 0.96), rgba(226, 214, 186, 0.92));
     box-shadow: 0 0 80px -10px rgba(27, 38, 32, 0.45);
-    transition: transform 860ms cubic-bezier(0.34, 0.03, 0.18, 1);
+    /* opening is the generous move; closing is quick and decisive */
+    transition: transform 560ms cubic-bezier(0.16, 0.84, 0.36, 1);
     will-change: transform;
   }
   .shoji-left  { left: 0;  transform: translate3d(-101%, 0, 0); }
   .shoji-right { right: 0; transform: translate3d(101%, 0, 0); }
   #shojiGate.is-closed .shoji-left,
   #shojiGate.is-closed .shoji-right { transform: translate3d(0, 0, 0); }
+  #shojiGate.is-closed .shoji-panel { transition-duration: 420ms; transition-timing-function: cubic-bezier(0.3, 0, 0.2, 1); }
 
   /* Leading stile — the thick vertical frame on the meeting edge */
   .shoji-panel::before {
@@ -3792,8 +3794,9 @@ function responseErrorMessage(data, fallback) {
   return (data && data.message) || fallback;
 }
 
-const SHOJI_SLIDE_MS = 860;
-const SHOJI_HOLD_MS = 300;
+const SHOJI_CLOSE_MS = 420;
+const SHOJI_OPEN_MS = 560;
+const SHOJI_HOLD_MS = 120;
 
 function shojiPause(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -3813,14 +3816,14 @@ async function openThroughShoji(reveal) {
   void gate.offsetWidth; // flush the open position so the slide-in animates
   gate.classList.add("is-closed");
   try {
-    await shojiPause(SHOJI_SLIDE_MS);
+    await shojiPause(SHOJI_CLOSE_MS);
     await reveal();
     await shojiPause(SHOJI_HOLD_MS);
   } finally {
     gate.classList.remove("is-closed");
     setTimeout(() => {
       if (!gate.classList.contains("is-closed")) gate.classList.remove("is-active");
-    }, SHOJI_SLIDE_MS);
+    }, SHOJI_OPEN_MS);
   }
 }
 
@@ -3841,13 +3844,15 @@ async function doLogin() {
     if (!r.ok) {
       throw new Error(responseErrorMessage(data, "아이디 또는 비밀번호가 맞지 않아요."));
     }
+    // Only the session gates the doors — the panel lists stream in behind
+    // them, so a slow network never leaves the visitor at a shut door.
     await openThroughShoji(async () => {
       if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
       $("loginOverlay").classList.remove("show");
       $("pwBox").value = "";
-      await Promise.all([loadRecent(), loadSharedProposals(), loadSharedDeletionProposals()]);
-      renderChatHistory();
     });
+    await Promise.all([loadRecent(), loadSharedProposals(), loadSharedDeletionProposals()]);
+    renderChatHistory();
   } catch (error) {
     $("loginErr").textContent = error.message;
     $("pwBox").value = "";
