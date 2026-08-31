@@ -238,8 +238,17 @@
     overflow: hidden;
   }
   #loginOverlay.show { display: flex; }
+  /* the session swap clears .show, but the doors still need their stage */
+  #loginOverlay.is-parting { display: flex; background: transparent; }
+  #loginOverlay.is-parting > .login-card {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.985);
+  }
+  #loginOverlay.is-parting::before, #loginOverlay.is-parting::after { opacity: 0; }
+  /* decorative only — never in the way of the form */
+  #loginOverlay::before, #loginOverlay::after { z-index: 3; pointer-events: none; transition: opacity 240ms ease; }
   /* Cherry branches drift in from top corners behind the login card */
-  #loginOverlay > .login-card { z-index: 3; }
+  #loginOverlay > .login-card { z-index: 3; transition: opacity 240ms ease, transform 240ms ease; }
   #loginOverlay::after {
     content: "";
     position: absolute;
@@ -1760,15 +1769,16 @@
   /* ==========================================================================
      SHOJI GATE · 障子 — on login the doors slide shut, then open onto the room
      ========================================================================== */
+  /* The entrance stands as a shut paper door behind the login card. */
   #shojiGate {
-    position: fixed;
+    position: absolute;
     inset: 0;
-    z-index: 400;
-    display: none;
+    z-index: 2;
+    visibility: hidden;
     pointer-events: none;
     overflow: hidden;
   }
-  #shojiGate.is-active { display: block; pointer-events: auto; }
+  #shojiGate.is-armed { visibility: visible; }
 
   /* Warm andon lamplight behind the paper, spilling through the parting seam */
   .shoji-light {
@@ -1781,7 +1791,9 @@
       linear-gradient(180deg, rgba(39, 94, 67, 0.10), rgba(27, 38, 32, 0.18));
     transition: opacity 360ms ease;
   }
-  #shojiGate.is-closed .shoji-light { opacity: 1; }
+  #shojiGate.is-armed .shoji-light { opacity: 1; }
+  /* the lamplight dissolves into the room as the panels part */
+  #shojiGate.is-opening .shoji-light { opacity: 0; }
 
   .shoji-panel {
     position: absolute;
@@ -1795,15 +1807,14 @@
       repeating-linear-gradient(0deg, transparent 0 60px, rgba(74, 57, 34, 0.42) 60px 63px),
       radial-gradient(ellipse 120% 80% at 50% 45%, rgba(255, 246, 219, 0.96), rgba(226, 214, 186, 0.92));
     box-shadow: 0 0 80px -10px rgba(27, 38, 32, 0.45);
-    /* opening is the generous move; closing is quick and decisive */
-    transition: transform 560ms cubic-bezier(0.16, 0.84, 0.36, 1);
+    /* weighted at the start, gliding free — a door on a wooden track */
+    transition: transform 620ms cubic-bezier(0.22, 0.72, 0.24, 1);
     will-change: transform;
   }
-  .shoji-left  { left: 0;  transform: translate3d(-101%, 0, 0); }
-  .shoji-right { right: 0; transform: translate3d(101%, 0, 0); }
-  #shojiGate.is-closed .shoji-left,
-  #shojiGate.is-closed .shoji-right { transform: translate3d(0, 0, 0); }
-  #shojiGate.is-closed .shoji-panel { transition-duration: 420ms; transition-timing-function: cubic-bezier(0.3, 0, 0.2, 1); }
+  .shoji-left  { left: 0;  transform: translate3d(0, 0, 0); }
+  .shoji-right { right: 0; transform: translate3d(0, 0, 0); }
+  #shojiGate.is-opening .shoji-left  { transform: translate3d(-101%, 0, 0); }
+  #shojiGate.is-opening .shoji-right { transform: translate3d(101%, 0, 0); }
 
   /* Leading stile — the thick vertical frame on the meeting edge */
   .shoji-panel::before {
@@ -1884,14 +1895,12 @@
 </button>
 <div id="ytPlayerBox" aria-hidden="true"><div id="ytPlayer"></div></div>
 
-<div id="shojiGate" aria-hidden="true">
-  <div class="shoji-light"></div>
-  <div class="shoji-panel shoji-left"></div>
-  <div class="shoji-panel shoji-right"></div>
-</div>
-
-
 <div id="loginOverlay" class="show" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <div id="shojiGate" class="is-armed" aria-hidden="true">
+    <div class="shoji-light"></div>
+    <div class="shoji-panel shoji-left"></div>
+    <div class="shoji-panel shoji-right"></div>
+  </div>
   <section class="login-card">
     <h2 id="loginTitle">
       <img class="brand-mark brand-mark-login" src="/static/gungum-tapa-mark.png" alt="" aria-hidden="true" width="44" height="44">
@@ -3794,37 +3803,51 @@ function responseErrorMessage(data, fallback) {
   return (data && data.message) || fallback;
 }
 
-const SHOJI_CLOSE_MS = 420;
-const SHOJI_OPEN_MS = 560;
-const SHOJI_HOLD_MS = 120;
+const SHOJI_CARD_FADE_MS = 240;
+const SHOJI_OPEN_MS = 620;
+let shojiParting = false;
 
 function shojiPause(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// 障子 — the doors slide shut over the entrance, the room is made ready behind
-// them, then they part onto it. `reveal` runs while the screen is covered, so
-// the login card swapping for the app is never seen. Motion-reduced visitors
-// just get the swap.
-async function openThroughShoji(reveal) {
+function setShojiArmed(armed) {
   const gate = $("shojiGate");
-  if (!gate || !window.matchMedia("(prefers-reduced-motion: no-preference)").matches) {
+  if (!gate) return;
+  gate.classList.toggle("is-armed", armed);
+  if (!armed) gate.classList.remove("is-opening");
+}
+
+// 障子 — the entrance stands shut. `reveal` makes the room ready behind the
+// paper, the card bows out alongside it, then the two panels glide apart onto
+// the room. A failed entry leaves the door closed. Motion-reduced visitors just
+// get the swap.
+async function partShojiDoors(reveal) {
+  const gate = $("shojiGate");
+  const overlay = $("loginOverlay");
+  const animate = gate && gate.classList.contains("is-armed") &&
+    window.matchMedia("(prefers-reduced-motion: no-preference)").matches;
+  if (!animate) {
     await reveal();
+    setShojiArmed(false);
     return;
   }
-  gate.classList.add("is-active");
-  void gate.offsetWidth; // flush the open position so the slide-in animates
-  gate.classList.add("is-closed");
+  shojiParting = true;
+  overlay.classList.add("is-parting");
   try {
-    await shojiPause(SHOJI_CLOSE_MS);
-    await reveal();
-    await shojiPause(SHOJI_HOLD_MS);
-  } finally {
-    gate.classList.remove("is-closed");
-    setTimeout(() => {
-      if (!gate.classList.contains("is-closed")) gate.classList.remove("is-active");
-    }, SHOJI_OPEN_MS);
+    // neither the card nor the session waits on the other
+    await Promise.all([reveal(), shojiPause(SHOJI_CARD_FADE_MS)]);
+  } catch (error) {
+    shojiParting = false;
+    overlay.classList.remove("is-parting");
+    setShojiArmed(true);
+    throw error;
   }
+  gate.classList.add("is-opening");
+  await shojiPause(SHOJI_OPEN_MS);
+  shojiParting = false;
+  overlay.classList.remove("is-parting");
+  setShojiArmed(false);
 }
 
 async function doLogin() {
@@ -3846,7 +3869,7 @@ async function doLogin() {
     }
     // Only the session gates the doors — the panel lists stream in behind
     // them, so a slow network never leaves the visitor at a shut door.
-    await openThroughShoji(async () => {
+    await partShojiDoors(async () => {
       if (!await loadSession()) throw new Error("로그인 세션을 확인하지 못했습니다.");
       $("loginOverlay").classList.remove("show");
       $("pwBox").value = "";
@@ -3944,6 +3967,7 @@ function applySession(data) {
   $("sessionRole").title = `권한: ${roleNames[role]}`;
   $("sessionInfo").classList.add("show");
   $("loginOverlay").classList.remove("show");
+  if (!shojiParting) setShojiArmed(false);
   setAppInert(false);
   $("ingestPanel").classList.toggle("role-hidden", !canWrite());
   $("sharedApprovalPanel").classList.remove("role-hidden");
@@ -4020,6 +4044,7 @@ function showLogin() {
   $("cleanBtn").style.display = "none";
   setAppInert(true);
   $("loginOverlay").classList.add("show");
+  setShojiArmed(true);
   setAuthMode("login");
 }
 
